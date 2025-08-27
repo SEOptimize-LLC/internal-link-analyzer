@@ -64,6 +64,14 @@ st.sidebar.header("⚙️ Analysis Configuration")
 content_filtering = st.sidebar.checkbox("Filter to main content only", value=True,
                                        help="Extract links only from main content, excluding navigation/footer")
 
+# Skip blocked pages option
+skip_blocked_pages = st.sidebar.checkbox("Skip blocked pages", value=False,
+                                        help="Skip pages that return 403 errors instead of retrying")
+
+# Inter-page delay option
+inter_page_delay = st.sidebar.slider("Delay between pages (seconds)", min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+                                    help="Additional delay between processing different pages")
+
 # This will be populated dynamically based on loaded URLs
 if 'config' not in st.session_state:
     st.session_state.config = None
@@ -171,7 +179,7 @@ def check_robots_txt(domain, user_agent='*'):
 
 # ----------- WEB SCRAPING FUNCTIONS -----------
 
-def fetch_page_content(url, timeout=20, max_retries=5):
+def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
     """Fetch page content with proper headers and aggressive retry logic."""
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -211,6 +219,9 @@ def fetch_page_content(url, timeout=20, max_retries=5):
                 time.sleep(wait_time)
                 continue
             else:
+                if skip_blocked and e.response.status_code in [403, 429]:
+                    st.warning(f"Skipping blocked page: {url}")
+                    return None  # Return None to indicate page should be skipped
                 raise Exception(f"HTTP {e.response.status_code} for {url}: {e.response.reason}")
 
         except requests.RequestException as e:
@@ -219,8 +230,14 @@ def fetch_page_content(url, timeout=20, max_retries=5):
                 time.sleep(wait_time)
                 continue
             else:
+                if skip_blocked:
+                    st.warning(f"Skipping unreachable page: {url}")
+                    return None  # Return None to indicate page should be skipped
                 raise Exception(f"Failed to fetch {url} after {max_retries} attempts: {str(e)}")
 
+    if skip_blocked:
+        st.warning(f"Skipping blocked page after all retries: {url}")
+        return None
     raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
 
 def extract_main_content_links(html_content, base_url, filter_content=True):
@@ -366,7 +383,15 @@ def analyze_internal_links(urls, progress_callback=None):
         for url in domain_urls:
             try:
                 # Fetch page content
-                html_content = fetch_page_content(url)
+                html_content = fetch_page_content(url, skip_blocked=skip_blocked_pages)
+
+                # Skip if page was blocked and we're skipping blocked pages
+                if html_content is None:
+                    processed += 1
+                    if progress_callback:
+                        progress = processed / total_urls
+                        progress_callback(progress, f"Processed {processed}/{total_urls} URLs (skipped blocked page)")
+                    continue
 
                 # Extract all links
                 all_links = extract_main_content_links(html_content, url, content_filtering)
@@ -385,8 +410,9 @@ def analyze_internal_links(urls, progress_callback=None):
                     progress = processed / total_urls
                     progress_callback(progress, f"Processed {processed}/{total_urls} URLs ({len(internal_links)} internal links found)")
 
-                # Rate limiting
-                time.sleep(delay)
+                # Rate limiting - use the longer of the two delays
+                actual_delay = max(delay, inter_page_delay)
+                time.sleep(actual_delay)
 
             except Exception as e:
                 errors.append(f"Error processing {url}: {str(e)}")
