@@ -60,6 +60,10 @@ def get_dynamic_config(url_count):
 # Sidebar configuration (now informational)
 st.sidebar.header("⚙️ Analysis Configuration")
 
+# Content filtering option
+content_filtering = st.sidebar.checkbox("Filter to main content only", value=True,
+                                       help="Extract links only from main content, excluding navigation/footer")
+
 # This will be populated dynamically based on loaded URLs
 if 'config' not in st.session_state:
     st.session_state.config = None
@@ -167,12 +171,15 @@ def check_robots_txt(domain, user_agent='*'):
 
 # ----------- WEB SCRAPING FUNCTIONS -----------
 
-def fetch_page_content(url, timeout=15, max_retries=3):
-    """Fetch page content with proper headers and retry logic."""
+def fetch_page_content(url, timeout=20, max_retries=5):
+    """Fetch page content with proper headers and aggressive retry logic."""
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/121.0',
     ]
 
     for attempt in range(max_retries):
@@ -185,6 +192,11 @@ def fetch_page_content(url, timeout=15, max_retries=3):
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
                 'Cache-Control': 'max-age=0',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
             }
 
             response = requests.get(url, headers=headers, timeout=timeout)
@@ -192,72 +204,84 @@ def fetch_page_content(url, timeout=15, max_retries=3):
             return response.text
 
         except requests.HTTPError as e:
-            if e.response.status_code == 403 and attempt < max_retries - 1:
-                # Wait before retry with different user agent
-                time.sleep(2 ** attempt)  # Exponential backoff
+            if e.response.status_code in [403, 429] and attempt < max_retries - 1:
+                # Longer wait for 403/429 errors
+                wait_time = min(2 ** attempt * 2, 30)  # Cap at 30 seconds
+                st.warning(f"HTTP {e.response.status_code} for {url}, retrying in {wait_time}s...")
+                time.sleep(wait_time)
                 continue
             else:
                 raise Exception(f"HTTP {e.response.status_code} for {url}: {e.response.reason}")
 
         except requests.RequestException as e:
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                wait_time = min(2 ** attempt, 15)  # Cap at 15 seconds
+                time.sleep(wait_time)
                 continue
             else:
                 raise Exception(f"Failed to fetch {url} after {max_retries} attempts: {str(e)}")
 
     raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
 
-def extract_main_content_links(html_content, base_url):
-    """Extract hyperlinks only from main content area, excluding navigation, footer, etc."""
+def extract_main_content_links(html_content, base_url, filter_content=True):
+    """Extract hyperlinks from page content, with optional main content filtering."""
     soup = BeautifulSoup(html_content, 'lxml')
     links = []
 
-    # Remove unwanted elements
-    unwanted_selectors = [
-        'nav', 'header', '.nav', '.navigation', '.navbar', '.menu',
-        'footer', '.footer', '.site-footer',
-        'aside', '.sidebar', '.widget', '.widget-area',
-        '.comments', '.comment', '#comments',
-        '.related-posts', '.related', '.similar',
-        '.social-share', '.share', '.sharing',
-        '.advertisement', '.ads', '.ad',
-        '.breadcrumb', '.breadcrumbs',
-        '.pagination', '.pager'
-    ]
+    if filter_content:
+        # Remove unwanted elements
+        unwanted_selectors = [
+            'nav', 'header', '.nav', '.navigation', '.navbar', '.menu',
+            'footer', '.footer', '.site-footer',
+            'aside', '.sidebar', '.widget', '.widget-area',
+            '.comments', '.comment', '#comments',
+            '.related-posts', '.related', '.similar',
+            '.social-share', '.share', '.sharing',
+            '.advertisement', '.ads', '.ad',
+            '.breadcrumb', '.breadcrumbs',
+            '.pagination', '.pager'
+        ]
 
-    for selector in unwanted_selectors:
-        for element in soup.select(selector):
-            element.decompose()
+        for selector in unwanted_selectors:
+            for element in soup.select(selector):
+                element.decompose()
 
-    # Try to find main content areas
-    content_selectors = [
-        'article', '.post-content', '.entry-content', '.content',
-        'main', '.main-content', '.article-content',
-        '.post', '.entry', '.single-post',
-        '.blog-post', '.article-body', '.post-body',
-        '[role="main"]', '.main'
-    ]
+        # Try to find main content areas (be less restrictive)
+        content_selectors = [
+            'article', '.post-content', '.entry-content', '.content',
+            'main', '.main-content', '.article-content',
+            '.post', '.entry', '.single-post',
+            '.blog-post', '.article-body', '.post-body',
+            '[role="main"]', '.main',
+            '#content', '#main', '.container', '.wrapper'
+        ]
 
-    main_content = None
+        main_content = None
 
-    # Try to find main content container
-    for selector in content_selectors:
-        main_content = soup.select_one(selector)
+        # Try to find main content container
+        for selector in content_selectors:
+            main_content = soup.select_one(selector)
+            if main_content:
+                break
+
+        # If no main content found, use body but be less aggressive in filtering
+        if not main_content:
+            main_content = soup.find('body')
+
+        # Only remove the most obvious non-content elements
         if main_content:
-            break
+            # Remove script, style, and navigation elements
+            for element in main_content.find_all(['script', 'style', 'nav', '.nav', '.navigation']):
+                element.decompose()
 
-    # If no main content found, use body but filter out common non-content elements
-    if not main_content:
-        main_content = soup.find('body')
-        if main_content:
-            # Remove script and style elements
-            for script in main_content.find_all(['script', 'style']):
-                script.decompose()
+        content_to_search = main_content if main_content else soup
+    else:
+        # Extract from entire page
+        content_to_search = soup
 
-    if main_content:
-        # Extract links from main content only
-        for a_tag in main_content.find_all('a', href=True):
+    if content_to_search:
+        # Extract links from content area
+        for a_tag in content_to_search.find_all('a', href=True):
             href = a_tag.get('href')
 
             # Improved anchor text extraction
@@ -345,7 +369,7 @@ def analyze_internal_links(urls, progress_callback=None):
                 html_content = fetch_page_content(url)
 
                 # Extract all links
-                all_links = extract_main_content_links(html_content, url)
+                all_links = extract_main_content_links(html_content, url, content_filtering)
 
                 # Filter internal links
                 internal_links = filter_internal_links(all_links, domain)
@@ -359,7 +383,7 @@ def analyze_internal_links(urls, progress_callback=None):
                 processed += 1
                 if progress_callback:
                     progress = processed / total_urls
-                    progress_callback(progress, f"Processed {processed}/{total_urls} URLs")
+                    progress_callback(progress, f"Processed {processed}/{total_urls} URLs ({len(internal_links)} internal links found)")
 
                 # Rate limiting
                 time.sleep(delay)
@@ -598,6 +622,9 @@ if st.session_state.analysis_complete and st.session_state.results:
         st.metric("Pages with Duplicate Links", unique_targets)
     with col3:
         st.metric("Total Duplicate Link Instances", len(results['duplicate_records']))
+
+    # Debug information
+    st.info(f"🔍 **Debug Info:** Found {len(results['duplicate_records'])} duplicate link instances across {results['total_links']} total internal links from {len(results['errors'])} errors")
 
     # Errors
     if results['errors']:
