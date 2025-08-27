@@ -5,6 +5,7 @@ A Streamlit web application that analyzes internal hyperlinks on websites to ide
 ## Features
 
 - **URL Input Options**: Manual entry or file upload (CSV/txt)
+- **Dynamic Configuration**: Automatically adapts analysis strategy based on dataset size
 - **Domain-Aware Analysis**: Analyzes each domain separately for accurate internal link detection
 - **Robots.txt Compliance**: Automatically checks and respects robots.txt files
 - **Duplicate Detection**: Identifies multiple internal links pointing to the same destination
@@ -12,7 +13,7 @@ A Streamlit web application that analyzes internal hyperlinks on websites to ide
 - **Export Functionality**: Download results as CSV files
 - **Error Handling**: Comprehensive error handling for network issues and invalid URLs
 - **Progress Tracking**: Real-time progress indicators during analysis
-- **Performance Optimized**: Rate limiting, caching, and timeout handling for Streamlit Cloud
+- **Smart Performance**: Automatic rate limiting and resource optimization
 
 ## Installation
 
@@ -46,20 +47,33 @@ streamlit run app.py
 8. **Results Display**: Duplicate links are displayed with source anchors and counts
 9. **Export**: Results can be downloaded as CSV files
 
-## Configuration Options
+## Automatic Configuration
 
-- **Maximum URLs to analyze**: Limits the number of URLs processed from your input list (default: 100, max: 1000). For large websites, you can analyze hundreds or thousands of URLs. ⚠️ Large datasets (500+) will take significant time and resources.
-- **Request Delay**: Delay between HTTP requests to respect server load (default: 1 second). Increase this for large analyses to avoid being rate-limited by servers.
+The app automatically adapts its behavior based on your URL list size:
 
-## Performance Considerations
+### 📊 **Dynamic Analysis Strategies**
 
-- **Small datasets (≤100 URLs)**: Fast analysis, minimal resource usage
-- **Medium datasets (100-500 URLs)**: Moderate time and resources, recommended for most use cases
-- **Large datasets (500+ URLs)**: Significant time and resources required, consider:
-  - Increasing request delay to 2-3 seconds
-  - Running during off-peak hours
-  - Splitting large analyses into smaller batches
-  - Using a powerful machine or cloud instance
+- **Fast Analysis (≤100 URLs)**:
+  - 1 second delay between requests
+  - Estimated time: < 5 minutes
+  - Optimized for quick results
+
+- **Balanced Analysis (101-500 URLs)**:
+  - 2 second delay between requests
+  - Estimated time: 5-20 minutes
+  - Good balance of speed and server respect
+
+- **Thorough Analysis (500+ URLs)**:
+  - 3 second delay between requests
+  - Estimated time: 20+ minutes
+  - Maximum care for server resources
+
+### 🎯 **Smart Features**
+
+- **No Manual Configuration**: The app automatically chooses the best settings
+- **Real-time Feedback**: See exactly what strategy will be used before analysis
+- **Server Protection**: Automatically increases delays for large datasets
+- **Performance Warnings**: Alerts for very large analyses
 
 ## Web Scraping Ethics
 

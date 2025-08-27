@@ -31,25 +31,52 @@ This tool analyzes internal hyperlinks on your website URLs to identify duplicat
 which may indicate diluted link equity and potential SEO issues.
 """)
 
-# Sidebar configuration
-st.sidebar.header("⚙️ Configuration")
-max_urls = st.sidebar.slider(
-    "Maximum URLs to analyze",
-    min_value=10,
-    max_value=1000,
-    value=100,
-    help="Maximum number of URLs to process from your input list. "
-         "Large numbers (500+) may take significant time and resources."
-)
+# ----------- DYNAMIC CONFIGURATION -----------
 
-# Add warning for large datasets
-if max_urls >= 500:
-    st.sidebar.warning(
-        f"⚠️ High URL limit ({max_urls}) selected. "
-        "Analysis may take considerable time and use significant resources."
-    )
-delay = st.sidebar.slider("Delay between requests (seconds)", min_value=0.5, max_value=10.0, value=1.0, step=0.5,
-                         help="Delay between HTTP requests to respect server load. Increase for large analyses.")
+def get_dynamic_config(url_count):
+    """Automatically determine optimal settings based on URL count."""
+    if url_count <= 100:
+        return {
+            'delay': 1.0,
+            'strategy': 'fast',
+            'description': 'Fast analysis (≤100 URLs)',
+            'estimated_time': '< 5 minutes'
+        }
+    elif url_count <= 500:
+        return {
+            'delay': 2.0,
+            'strategy': 'balanced',
+            'description': 'Balanced analysis (101-500 URLs)',
+            'estimated_time': '5-20 minutes'
+        }
+    else:  # > 500
+        return {
+            'delay': 3.0,
+            'strategy': 'thorough',
+            'description': 'Thorough analysis (500+ URLs)',
+            'estimated_time': '20+ minutes'
+        }
+
+# Sidebar configuration (now informational)
+st.sidebar.header("⚙️ Analysis Configuration")
+
+# This will be populated dynamically based on loaded URLs
+if 'config' not in st.session_state:
+    st.session_state.config = None
+
+if st.session_state.config:
+    config = st.session_state.config
+    st.sidebar.success(f"📊 **{config['description']}**")
+    st.sidebar.info(f"⏱️ **Estimated time:** {config['estimated_time']}")
+    st.sidebar.info(f"⏳ **Delay between requests:** {config['delay']}s")
+    st.sidebar.info(f"🎯 **Strategy:** {config['strategy'].title()}")
+
+    if config['strategy'] == 'thorough':
+        st.sidebar.warning(
+            "⚠️ Large dataset detected. Analysis will take longer but be more thorough."
+        )
+else:
+    st.sidebar.info("📝 Load your URLs to see automatic configuration.")
 
 st.sidebar.header("📋 About")
 st.sidebar.info("""
@@ -196,6 +223,10 @@ def analyze_internal_links(urls, progress_callback=None):
     all_internal_links = []
     errors = []
 
+    # Get dynamic configuration based on URL count
+    config = get_dynamic_config(len(urls))
+    delay = config['delay']
+
     # Group URLs by domain
     domain_groups = {}
     for url in urls:
@@ -331,7 +362,9 @@ with tab1:
                           (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
 
             if valid_urls:
-                st.session_state.urls = valid_urls[:max_urls]  # Limit to max_urls
+                st.session_state.urls = valid_urls  # No artificial limit
+                # Set dynamic configuration based on URL count
+                st.session_state.config = get_dynamic_config(len(valid_urls))
                 st.success(f"Loaded {len(st.session_state.urls)} valid URLs")
                 st.session_state.analysis_complete = False
             else:
@@ -366,7 +399,9 @@ with tab2:
                           (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
 
             if valid_urls:
-                st.session_state.urls = valid_urls[:max_urls]  # Limit to max_urls
+                st.session_state.urls = valid_urls  # No artificial limit
+                # Set dynamic configuration based on URL count
+                st.session_state.config = get_dynamic_config(len(valid_urls))
                 st.success(f"Loaded {len(st.session_state.urls)} valid URLs from file")
                 st.session_state.analysis_complete = False
             else:
