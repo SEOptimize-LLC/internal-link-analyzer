@@ -259,10 +259,34 @@ def extract_main_content_links(html_content, base_url):
         # Extract links from main content only
         for a_tag in main_content.find_all('a', href=True):
             href = a_tag.get('href')
-            anchor_text = a_tag.get_text(strip=True) or '[No Text]'
 
-            # Skip if anchor text is too short or generic
-            if len(anchor_text) < 3 or anchor_text.lower() in ['read more', 'click here', 'learn more', 'here']:
+            # Improved anchor text extraction
+            anchor_text = ''
+
+            # First, try to get direct text content
+            if a_tag.string and a_tag.string.strip():
+                anchor_text = a_tag.string.strip()
+            else:
+                # If no direct text, get all text content but exclude certain elements
+                text_parts = []
+                for element in a_tag.contents:
+                    if isinstance(element, str):
+                        text_parts.append(element.strip())
+                    elif element.name not in ['img', 'svg', 'script', 'style']:
+                        text_parts.append(element.get_text(strip=True))
+
+                anchor_text = ' '.join(text_parts).strip()
+
+            # Clean up the anchor text
+            anchor_text = re.sub(r'\s+', ' ', anchor_text)  # Replace multiple whitespace with single space
+            anchor_text = anchor_text[:200] if len(anchor_text) > 200 else anchor_text  # Limit length
+
+            # Skip if anchor text is empty, too short, or generic
+            if not anchor_text or len(anchor_text) < 3:
+                continue
+
+            generic_terms = ['read more', 'click here', 'learn more', 'here', 'more', 'continue reading', 'see more']
+            if anchor_text.lower() in generic_terms:
                 continue
 
             # Convert relative URLs to absolute
@@ -375,6 +399,41 @@ def find_duplicate_links(internal_links):
     duplicate_records.sort(key=lambda x: (x['target_url'], x['destination_url']))
 
     return duplicate_records
+
+def create_horizontal_dataframe(duplicate_records):
+    """Convert vertical duplicate records to horizontal format."""
+    if not duplicate_records:
+        return pd.DataFrame()
+
+    # Group by target URL
+    from collections import defaultdict
+    target_groups = defaultdict(list)
+
+    for record in duplicate_records:
+        target_groups[record['target_url']].append({
+            'destination_url': record['destination_url'],
+            'anchor_text_used': record['anchor_text_used']
+        })
+
+    # Create horizontal rows
+    horizontal_rows = []
+    max_duplicates = max(len(duplicates) for duplicates in target_groups.values())
+
+    for target_url, duplicates in target_groups.items():
+        row = {'target_url': target_url}
+
+        for i, duplicate in enumerate(duplicates):
+            row[f'destination_url_{i+1}'] = duplicate['destination_url']
+            row[f'anchor_text_used_{i+1}'] = duplicate['anchor_text_used']
+
+        # Fill empty columns with empty strings
+        for i in range(len(duplicates), max_duplicates):
+            row[f'destination_url_{i+1}'] = ''
+            row[f'anchor_text_used_{i+1}'] = ''
+
+        horizontal_rows.append(row)
+
+    return pd.DataFrame(horizontal_rows)
 
 def create_results_dataframe(duplicate_records):
     """Create a pandas DataFrame from individual duplicate link records."""
@@ -504,10 +563,12 @@ if st.session_state.urls:
 
                     duplicate_records = find_duplicate_links(internal_links)
                     results_df = create_results_dataframe(duplicate_records)
+                    horizontal_df = create_horizontal_dataframe(duplicate_records)
 
                     st.session_state.results = {
                         'duplicate_records': duplicate_records,
                         'dataframe': results_df,
+                        'horizontal_dataframe': horizontal_df,
                         'total_links': len(internal_links),
                         'errors': errors
                     }
@@ -547,28 +608,12 @@ if st.session_state.analysis_complete and st.session_state.results:
                 st.write(f"... and {len(results['errors']) - 10} more errors")
 
     # Results table
-    if not results['dataframe'].empty:
+    if 'horizontal_dataframe' in results and not results['horizontal_dataframe'].empty:
         st.subheader("Duplicate Internal Links")
-        st.markdown("*Shows pages with multiple links to the same destination*")
+        st.markdown("*Each row shows a target URL with all its duplicate links horizontally*")
 
-        # Group by target URL to show all duplicates on each page
-        for target_url in results['dataframe']['target_url'].unique():
-            page_duplicates = results['dataframe'][results['dataframe']['target_url'] == target_url]
-
-            st.markdown(f"**📄 {target_url}**")
-
-            # Group by destination URL for this target page
-            dest_groups = page_duplicates.groupby('destination_url')
-
-            for dest_url, group in dest_groups:
-                if len(group) > 1:  # Only show destinations with multiple links
-                    st.markdown(f"🔗 **{dest_url}** ({len(group)} duplicate links)")
-
-                    # Show each duplicate link with its anchor text
-                    for _, link in group.iterrows():
-                        st.markdown(f"   - *\"{link['anchor_text_used']}\"*")
-
-            st.markdown("---")
+        # Display the horizontal dataframe
+        st.dataframe(results['horizontal_dataframe'], use_container_width=True)
 
         # Export
         st.subheader("💾 Export Results")
@@ -577,7 +622,7 @@ if st.session_state.analysis_complete and st.session_state.results:
         with col1:
             st.markdown("**CSV Export:**")
             csv_link = get_csv_download_link(
-                results['dataframe'],
+                results['horizontal_dataframe'],
                 'duplicate_internal_links.csv'
             )
             st.markdown(csv_link, unsafe_allow_html=True)
