@@ -1,6 +1,6 @@
 # Internal Link Analyzer
 
-A Streamlit web application that analyzes internal hyperlinks on websites to identify duplicate links pointing to the same destination, helping identify potential SEO issues related to diluted link equity.
+A Streamlit web application that analyzes internal hyperlinks on websites to identify **duplicate links on the same page** pointing to identical destinations. This helps identify genuine SEO issues where multiple links to the same URL from one page dilute link equity.
 
 ## Features
 
@@ -93,14 +93,34 @@ This tool is designed with responsible web scraping in mind:
 - Includes proper user-agent headers
 - Limited to internal link analysis only
 
+## What It Finds
+
+This tool identifies **duplicate internal links on the same page** that point to identical destinations. This is a genuine SEO issue because:
+
+- **Link Equity Dilution**: Multiple links to the same destination from one page split the page's authority
+- **User Confusion**: Visitors see multiple ways to reach the same destination
+- **Crawler Confusion**: Search engines may interpret this as over-optimization
+
+### Example Output
+```
+Target URL: https://example.com/blog/seo-tips
+├── Destination: https://example.com/services/seo-consultation
+│   ├── Anchor: "Get SEO Help"
+│   ├── Anchor: "SEO Consultation"
+│   └── Anchor: "Contact Our SEO Experts"
+└── Destination: https://example.com/blog/keyword-research
+    ├── Anchor: "Learn Keyword Research"
+    └── Anchor: "Keyword Research Guide"
+```
+
 ## Output Format
 
 The analysis produces a CSV file with the following columns:
-- **Target URL**: The source page where the hyperlink is placed
-- **Destination URL**: Where the hyperlink points to
-- **Anchor Text Used**: The anchor text of the hyperlink
+- **Target URL**: The page being analyzed (where duplicate links are found)
+- **Destination URL**: Where the duplicate links point to
+- **Anchor Text Used**: The anchor text of each duplicate link instance
 
-**Note**: Each row represents an individual duplicate link instance, not grouped data. This allows you to see exactly which pages are linking to the same destination and with what anchor text.
+**Note**: Each row represents an individual duplicate link instance. Multiple rows with the same Target URL + Destination URL indicate the duplicate link problem.
 
 ## Content Filtering
 

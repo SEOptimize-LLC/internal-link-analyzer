@@ -27,8 +27,8 @@ if 'analysis_complete' not in st.session_state:
 
 st.title("Internal Link Analyzer")
 st.markdown("""
-This tool analyzes internal hyperlinks on your website URLs to identify duplicate links pointing to the same destination,
-which may indicate diluted link equity and potential SEO issues.
+This tool analyzes internal hyperlinks on your website URLs to identify **duplicate links on the same page** pointing to identical destinations.
+This helps identify genuine SEO issues where multiple links to the same URL from one page dilute link equity.
 """)
 
 # ----------- DYNAMIC CONFIGURATION -----------
@@ -350,31 +350,29 @@ def analyze_internal_links(urls, progress_callback=None):
     return all_internal_links, errors
 
 def find_duplicate_links(internal_links):
-    """Find all duplicate links (individual records, not grouped)."""
+    """Find duplicate links on the SAME page pointing to the same destination."""
     from collections import defaultdict
 
-    # Group by destination URL to identify duplicates
-    destination_groups = defaultdict(list)
+    # Group by source page (target_url), then by destination URL
+    page_destination_groups = defaultdict(lambda: defaultdict(list))
 
     for link in internal_links:
-        destination_groups[link['url']].append({
-            'source_url': link['source_url'],
-            'anchor': link['anchor']
-        })
+        page_destination_groups[link['source_url']][link['url']].append(link['anchor'])
 
-    # Create individual records for duplicates only
+    # Find duplicates: same source page linking multiple times to same destination
     duplicate_records = []
-    for dest_url, sources in destination_groups.items():
-        if len(sources) > 1:  # Only include destinations with multiple links
-            for source in sources:
-                duplicate_records.append({
-                    'target_url': source['source_url'],  # Source page (where link is placed)
-                    'destination_url': dest_url,         # Where the link points to
-                    'anchor_text_used': source['anchor'] # Anchor text of the link
-                })
+    for target_url, destinations in page_destination_groups.items():
+        for dest_url, anchors in destinations.items():
+            if len(anchors) > 1:  # Multiple links to same destination from same page
+                for anchor in anchors:
+                    duplicate_records.append({
+                        'target_url': target_url,        # Page being analyzed
+                        'destination_url': dest_url,     # Where links point to
+                        'anchor_text_used': anchor       # Anchor text of each duplicate link
+                    })
 
-    # Sort by destination URL for better organization
-    duplicate_records.sort(key=lambda x: (x['destination_url'], x['target_url']))
+    # Sort by target URL, then destination URL
+    duplicate_records.sort(key=lambda x: (x['target_url'], x['destination_url']))
 
     return duplicate_records
 
@@ -534,9 +532,9 @@ if st.session_state.analysis_complete and st.session_state.results:
     with col1:
         st.metric("Total Internal Links Found", results['total_links'])
     with col2:
-        # Count unique destination URLs that have duplicates
-        unique_destinations = len(set(record['destination_url'] for record in results['duplicate_records']))
-        st.metric("URLs with Duplicate Links", unique_destinations)
+        # Count unique target URLs that have duplicate links
+        unique_targets = len(set(record['target_url'] for record in results['duplicate_records']))
+        st.metric("Pages with Duplicate Links", unique_targets)
     with col3:
         st.metric("Total Duplicate Link Instances", len(results['duplicate_records']))
 
@@ -551,21 +549,26 @@ if st.session_state.analysis_complete and st.session_state.results:
     # Results table
     if not results['dataframe'].empty:
         st.subheader("Duplicate Internal Links")
-        st.markdown("*Each row represents one duplicate link instance*")
+        st.markdown("*Shows pages with multiple links to the same destination*")
 
-        # Group by destination URL for better visualization
-        grouped_df = results['dataframe'].groupby('destination_url').agg({
-            'target_url': 'count',
-            'anchor_text_used': lambda x: ', '.join(x.unique()[:3]) + ('...' if len(x.unique()) > 3 else '')
-        }).rename(columns={'target_url': 'duplicate_count'}).reset_index()
+        # Group by target URL to show all duplicates on each page
+        for target_url in results['dataframe']['target_url'].unique():
+            page_duplicates = results['dataframe'][results['dataframe']['target_url'] == target_url]
 
-        # Show summary table first
-        st.markdown("**Summary by Destination URL:**")
-        st.dataframe(grouped_df, use_container_width=True)
+            st.markdown(f"**📄 {target_url}**")
 
-        # Show detailed individual records
-        st.markdown("**Detailed Link Instances:**")
-        st.dataframe(results['dataframe'], use_container_width=True)
+            # Group by destination URL for this target page
+            dest_groups = page_duplicates.groupby('destination_url')
+
+            for dest_url, group in dest_groups:
+                if len(group) > 1:  # Only show destinations with multiple links
+                    st.markdown(f"🔗 **{dest_url}** ({len(group)} duplicate links)")
+
+                    # Show each duplicate link with its anchor text
+                    for _, link in group.iterrows():
+                        st.markdown(f"   - *\"{link['anchor_text_used']}\"*")
+
+            st.markdown("---")
 
         # Export
         st.subheader("💾 Export Results")
@@ -583,9 +586,8 @@ if st.session_state.analysis_complete and st.session_state.results:
             st.markdown("**Excel Export:**")
             # For Excel, we'd need openpyxl, but for now just CSV
             st.markdown("Coming soon - use CSV for now")
-
-    else:
-        st.success("✅ No duplicate internal links found! All internal links are unique.")
+else:
+    st.success("✅ No duplicate internal links found! Each internal link is unique.")
 
 # Footer
 st.markdown("---")
