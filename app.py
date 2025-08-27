@@ -17,6 +17,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize session state variables at the start
+if 'urls' not in st.session_state:
+    st.session_state.urls = []
+if 'results' not in st.session_state:
+    st.session_state.results = None
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+
 st.title("Internal Link Analyzer")
 st.markdown("""
 This tool analyzes internal hyperlinks on your website URLs to identify duplicate links pointing to the same destination,
@@ -25,13 +33,29 @@ which may indicate diluted link equity and potential SEO issues.
 
 # Sidebar configuration
 st.sidebar.header("⚙️ Configuration")
-max_urls = st.sidebar.slider("Maximum URLs to analyze", min_value=1, max_value=50, value=10)
-delay = st.sidebar.slider("Delay between requests (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+max_urls = st.sidebar.slider(
+    "Maximum URLs to analyze",
+    min_value=10,
+    max_value=1000,
+    value=100,
+    help="Maximum number of URLs to process from your input list. "
+         "Large numbers (500+) may take significant time and resources."
+)
+
+# Add warning for large datasets
+if max_urls >= 500:
+    st.sidebar.warning(
+        f"⚠️ High URL limit ({max_urls}) selected. "
+        "Analysis may take considerable time and use significant resources."
+    )
+delay = st.sidebar.slider("Delay between requests (seconds)", min_value=0.5, max_value=10.0, value=1.0, step=0.5,
+                         help="Delay between HTTP requests to respect server load. Increase for large analyses.")
 
 st.sidebar.header("📋 About")
 st.sidebar.info("""
 This app analyzes internal links on provided URLs to find duplicates that may dilute link equity.
 - Supports manual URL entry and file uploads (CSV/txt)
+- Handles large datasets (up to 1000 URLs)
 - Respects robots.txt files
 - Identifies duplicate internal links with source anchors
 - Exports results to CSV
@@ -468,11 +492,3 @@ st.markdown("""
     <p><small>Use responsibly and respect website terms of service</small></p>
 </div>
 """, unsafe_allow_html=True)
-
-# Global variables for session state
-if 'urls' not in st.session_state:
-    st.session_state.urls = []
-if 'results' not in st.session_state:
-    st.session_state.results = None
-if 'analysis_complete' not in st.session_state:
-    st.session_state.analysis_complete = False

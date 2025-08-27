@@ -48,8 +48,18 @@ streamlit run app.py
 
 ## Configuration Options
 
-- **Maximum URLs**: Limit the number of URLs to analyze (default: 10)
-- **Request Delay**: Delay between requests to respect server load (default: 1 second)
+- **Maximum URLs to analyze**: Limits the number of URLs processed from your input list (default: 100, max: 1000). For large websites, you can analyze hundreds or thousands of URLs. ⚠️ Large datasets (500+) will take significant time and resources.
+- **Request Delay**: Delay between HTTP requests to respect server load (default: 1 second). Increase this for large analyses to avoid being rate-limited by servers.
+
+## Performance Considerations
+
+- **Small datasets (≤100 URLs)**: Fast analysis, minimal resource usage
+- **Medium datasets (100-500 URLs)**: Moderate time and resources, recommended for most use cases
+- **Large datasets (500+ URLs)**: Significant time and resources required, consider:
+  - Increasing request delay to 2-3 seconds
+  - Running during off-peak hours
+  - Splitting large analyses into smaller batches
+  - Using a powerful machine or cloud instance
 
 ## Web Scraping Ethics
 
