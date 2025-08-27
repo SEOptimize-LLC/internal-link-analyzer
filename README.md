@@ -75,6 +75,15 @@ The app automatically adapts its behavior based on your URL list size:
 - **Server Protection**: Automatically increases delays for large datasets
 - **Performance Warnings**: Alerts for very large analyses
 
+## Error Handling & Resilience
+
+The app includes robust error handling for common web scraping issues:
+
+- **403 Forbidden Errors**: Automatic retry with different user agents and exponential backoff
+- **Network Timeouts**: Configurable timeout handling with retry logic
+- **Robots.txt Blocking**: Respects website crawling restrictions
+- **Invalid URLs**: Graceful handling of malformed or unreachable URLs
+
 ## Web Scraping Ethics
 
 This tool is designed with responsible web scraping in mind:
@@ -87,10 +96,19 @@ This tool is designed with responsible web scraping in mind:
 ## Output Format
 
 The analysis produces a CSV file with the following columns:
-- **Destination URL**: The URL that multiple links point to
-- **Count**: Number of duplicate links found
-- **Source URLs**: Comma-separated list of source page URLs
-- **Anchors**: Comma-separated list of anchor texts used
+- **Target URL**: The source page where the hyperlink is placed
+- **Destination URL**: Where the hyperlink points to
+- **Anchor Text Used**: The anchor text of the hyperlink
+
+**Note**: Each row represents an individual duplicate link instance, not grouped data. This allows you to see exactly which pages are linking to the same destination and with what anchor text.
+
+## Content Filtering
+
+The app intelligently filters links to focus on main content only:
+- ✅ **Included**: Links from article content, blog post body, main textual content
+- ❌ **Excluded**: Navigation menus, footers, sidebars, advertisements, comments, social sharing buttons, breadcrumbs, pagination, and other non-content elements
+
+This ensures the analysis focuses on editorial links that contribute to SEO value rather than navigational or template links.
 
 ## Requirements
 

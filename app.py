@@ -167,43 +167,114 @@ def check_robots_txt(domain, user_agent='*'):
 
 # ----------- WEB SCRAPING FUNCTIONS -----------
 
-def fetch_page_content(url, timeout=10):
-    """Fetch page content with proper headers."""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
+def fetch_page_content(url, timeout=15, max_retries=3):
+    """Fetch page content with proper headers and retry logic."""
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ]
 
-    try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException as e:
-        raise Exception(f"Failed to fetch {url}: {str(e)}")
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                'User-Agent': user_agents[attempt % len(user_agents)],
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Cache-Control': 'max-age=0',
+            }
 
-def extract_links_from_html(html_content, base_url):
-    """Extract all hyperlinks from HTML content."""
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+
+        except requests.HTTPError as e:
+            if e.response.status_code == 403 and attempt < max_retries - 1:
+                # Wait before retry with different user agent
+                time.sleep(2 ** attempt)  # Exponential backoff
+                continue
+            else:
+                raise Exception(f"HTTP {e.response.status_code} for {url}: {e.response.reason}")
+
+        except requests.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                raise Exception(f"Failed to fetch {url} after {max_retries} attempts: {str(e)}")
+
+    raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
+
+def extract_main_content_links(html_content, base_url):
+    """Extract hyperlinks only from main content area, excluding navigation, footer, etc."""
     soup = BeautifulSoup(html_content, 'lxml')
     links = []
 
-    for a_tag in soup.find_all('a', href=True):
-        href = a_tag.get('href')
-        anchor_text = a_tag.get_text(strip=True) or '[No Text]'
+    # Remove unwanted elements
+    unwanted_selectors = [
+        'nav', 'header', '.nav', '.navigation', '.navbar', '.menu',
+        'footer', '.footer', '.site-footer',
+        'aside', '.sidebar', '.widget', '.widget-area',
+        '.comments', '.comment', '#comments',
+        '.related-posts', '.related', '.similar',
+        '.social-share', '.share', '.sharing',
+        '.advertisement', '.ads', '.ad',
+        '.breadcrumb', '.breadcrumbs',
+        '.pagination', '.pager'
+    ]
 
-        # Convert relative URLs to absolute
-        absolute_url = urljoin(base_url, href)
+    for selector in unwanted_selectors:
+        for element in soup.select(selector):
+            element.decompose()
 
-        # Normalize the URL
-        normalized_url = normalize_url(absolute_url)
+    # Try to find main content areas
+    content_selectors = [
+        'article', '.post-content', '.entry-content', '.content',
+        'main', '.main-content', '.article-content',
+        '.post', '.entry', '.single-post',
+        '.blog-post', '.article-body', '.post-body',
+        '[role="main"]', '.main'
+    ]
 
-        links.append({
-            'url': normalized_url,
-            'anchor': anchor_text
-        })
+    main_content = None
+
+    # Try to find main content container
+    for selector in content_selectors:
+        main_content = soup.select_one(selector)
+        if main_content:
+            break
+
+    # If no main content found, use body but filter out common non-content elements
+    if not main_content:
+        main_content = soup.find('body')
+        if main_content:
+            # Remove script and style elements
+            for script in main_content.find_all(['script', 'style']):
+                script.decompose()
+
+    if main_content:
+        # Extract links from main content only
+        for a_tag in main_content.find_all('a', href=True):
+            href = a_tag.get('href')
+            anchor_text = a_tag.get_text(strip=True) or '[No Text]'
+
+            # Skip if anchor text is too short or generic
+            if len(anchor_text) < 3 or anchor_text.lower() in ['read more', 'click here', 'learn more', 'here']:
+                continue
+
+            # Convert relative URLs to absolute
+            absolute_url = urljoin(base_url, href)
+
+            # Normalize the URL
+            normalized_url = normalize_url(absolute_url)
+
+            links.append({
+                'url': normalized_url,
+                'anchor': anchor_text
+            })
 
     return links
 
@@ -250,7 +321,7 @@ def analyze_internal_links(urls, progress_callback=None):
                 html_content = fetch_page_content(url)
 
                 # Extract all links
-                all_links = extract_links_from_html(html_content, url)
+                all_links = extract_main_content_links(html_content, url)
 
                 # Filter internal links
                 internal_links = filter_internal_links(all_links, domain)
@@ -279,10 +350,10 @@ def analyze_internal_links(urls, progress_callback=None):
     return all_internal_links, errors
 
 def find_duplicate_links(internal_links):
-    """Find duplicate links pointing to the same destination."""
+    """Find all duplicate links (individual records, not grouped)."""
     from collections import defaultdict
 
-    # Group by destination URL
+    # Group by destination URL to identify duplicates
     destination_groups = defaultdict(list)
 
     for link in internal_links:
@@ -291,39 +362,28 @@ def find_duplicate_links(internal_links):
             'anchor': link['anchor']
         })
 
-    # Find duplicates (more than one link to same destination)
-    duplicates = []
+    # Create individual records for duplicates only
+    duplicate_records = []
     for dest_url, sources in destination_groups.items():
-        if len(sources) > 1:
-            duplicates.append({
-                'destination_url': dest_url,
-                'count': len(sources),
-                'sources': sources
-            })
+        if len(sources) > 1:  # Only include destinations with multiple links
+            for source in sources:
+                duplicate_records.append({
+                    'target_url': source['source_url'],  # Source page (where link is placed)
+                    'destination_url': dest_url,         # Where the link points to
+                    'anchor_text_used': source['anchor'] # Anchor text of the link
+                })
 
-    # Sort by count (most duplicates first)
-    duplicates.sort(key=lambda x: x['count'], reverse=True)
+    # Sort by destination URL for better organization
+    duplicate_records.sort(key=lambda x: (x['destination_url'], x['target_url']))
 
-    return duplicates
+    return duplicate_records
 
-def create_results_dataframe(duplicates):
-    """Create a pandas DataFrame from duplicates data."""
-    if not duplicates:
-        return pd.DataFrame(columns=['Destination URL', 'Count', 'Source URLs', 'Anchors'])
+def create_results_dataframe(duplicate_records):
+    """Create a pandas DataFrame from individual duplicate link records."""
+    if not duplicate_records:
+        return pd.DataFrame(columns=['Target URL', 'Destination URL', 'Anchor Text Used'])
 
-    rows = []
-    for dup in duplicates:
-        source_urls = [s['source_url'] for s in dup['sources']]
-        anchors = [s['anchor'] for s in dup['sources']]
-
-        rows.append({
-            'Destination URL': dup['destination_url'],
-            'Count': dup['count'],
-            'Source URLs': ', '.join(source_urls),
-            'Anchors': ', '.join(anchors)
-        })
-
-    return pd.DataFrame(rows)
+    return pd.DataFrame(duplicate_records)
 
 # ----------- EXPORT FUNCTIONS -----------
 
@@ -444,11 +504,11 @@ if st.session_state.urls:
                         progress_callback
                     )
 
-                    duplicates = find_duplicate_links(internal_links)
-                    results_df = create_results_dataframe(duplicates)
+                    duplicate_records = find_duplicate_links(internal_links)
+                    results_df = create_results_dataframe(duplicate_records)
 
                     st.session_state.results = {
-                        'duplicates': duplicates,
+                        'duplicate_records': duplicate_records,
                         'dataframe': results_df,
                         'total_links': len(internal_links),
                         'errors': errors
@@ -474,10 +534,11 @@ if st.session_state.analysis_complete and st.session_state.results:
     with col1:
         st.metric("Total Internal Links Found", results['total_links'])
     with col2:
-        st.metric("Duplicate Destinations", len(results['duplicates']))
+        # Count unique destination URLs that have duplicates
+        unique_destinations = len(set(record['destination_url'] for record in results['duplicate_records']))
+        st.metric("URLs with Duplicate Links", unique_destinations)
     with col3:
-        total_duplicates = sum(d['count'] for d in results['duplicates'])
-        st.metric("Total Duplicate Links", total_duplicates)
+        st.metric("Total Duplicate Link Instances", len(results['duplicate_records']))
 
     # Errors
     if results['errors']:
@@ -490,14 +551,21 @@ if st.session_state.analysis_complete and st.session_state.results:
     # Results table
     if not results['dataframe'].empty:
         st.subheader("Duplicate Internal Links")
+        st.markdown("*Each row represents one duplicate link instance*")
 
-        # Highlight duplicates
-        def highlight_duplicates(row):
-            return ['background-color: #ffe6e6' if row['Count'] > 1 else '' for _ in row]
+        # Group by destination URL for better visualization
+        grouped_df = results['dataframe'].groupby('destination_url').agg({
+            'target_url': 'count',
+            'anchor_text_used': lambda x: ', '.join(x.unique()[:3]) + ('...' if len(x.unique()) > 3 else '')
+        }).rename(columns={'target_url': 'duplicate_count'}).reset_index()
 
-        styled_df = results['dataframe'].style.apply(highlight_duplicates, axis=1)
+        # Show summary table first
+        st.markdown("**Summary by Destination URL:**")
+        st.dataframe(grouped_df, use_container_width=True)
 
-        st.dataframe(styled_df, use_container_width=True)
+        # Show detailed individual records
+        st.markdown("**Detailed Link Instances:**")
+        st.dataframe(results['dataframe'], use_container_width=True)
 
         # Export
         st.subheader("💾 Export Results")
@@ -507,7 +575,7 @@ if st.session_state.analysis_complete and st.session_state.results:
             st.markdown("**CSV Export:**")
             csv_link = get_csv_download_link(
                 results['dataframe'],
-                'internal_link_duplicates.csv'
+                'duplicate_internal_links.csv'
             )
             st.markdown(csv_link, unsafe_allow_html=True)
 
