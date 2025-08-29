@@ -1,5 +1,2 @@
-# System-level packages for Streamlit Cloud
-# These are installed at the system level before Python packages
-
 # No system packages needed for this app
 # All dependencies are Python packages in requirements.txt
