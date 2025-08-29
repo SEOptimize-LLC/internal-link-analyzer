@@ -1,872 +1,899 @@
 import streamlit as st
 import pandas as pd
 import requests
+from urllib.parse import urlparse, urljoin, unquote
+import xml.etree.ElementTree as ET
+from collections import defaultdict, Counter
+from datetime import datetime
+import plotly.graph_objects as go
+import plotly.express as px
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin, urlunparse
-from urllib.robotparser import RobotFileParser
 import time
+import json
+import csv
+from io import StringIO, BytesIO
+import networkx as nx
+from typing import Dict, List, Set, Tuple, Optional
 import re
-from io import StringIO
-import base64
-from collections import defaultdict
-
-# Import our enhanced modules
-from sitemap_processor import SitemapProcessor
-
-# Import optional modules with fallbacks
-try:
-    # Try lite version first (works without NLTK)
-    from anchor_text_analyzer_lite import AnchorTextAnalyzerLite
-    ANCHOR_ANALYSIS_AVAILABLE = True
-    ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzerLite
-    print("Using lite anchor text analyzer")
-except ImportError:
-    ANCHOR_ANALYSIS_AVAILABLE = False
-    ANCHOR_ANALYZER_CLASS = None
-    print("Warning: Anchor text analysis not available")
-
-try:
-    from recommendation_engine import RecommendationEngine
-    RECOMMENDATIONS_AVAILABLE = True
-except ImportError:
-    RECOMMENDATIONS_AVAILABLE = False
-    print("Warning: Recommendations not available")
+import concurrent.futures
+from dataclasses import dataclass, asdict
+import hashlib
 
 # Page configuration
 st.set_page_config(
-    page_title="Enhanced Internal Link Analyzer",
+    page_title="Internal Link Analyzer",
     page_icon="🔗",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state variables
-if 'urls' not in st.session_state:
-    st.session_state.urls = []
-if 'results' not in st.session_state:
-    st.session_state.results = None
-if 'analysis_complete' not in st.session_state:
-    st.session_state.analysis_complete = False
-if 'config' not in st.session_state:
-    st.session_state.config = None
-
-st.title("Enhanced Internal Link Analyzer")
+# Custom CSS
 st.markdown("""
-This advanced tool analyzes internal hyperlinks on your website URLs to identify **duplicate links** and **anchor text optimization opportunities**.
-It provides comprehensive SEO insights and actionable recommendations for improving your internal linking strategy.
-""")
-
-# ----------- DYNAMIC CONFIGURATION -----------
-
-def get_dynamic_config(url_count):
-    """Automatically determine optimal settings based on URL count."""
-    if url_count <= 100:
-        return {
-            'delay': 1.0,
-            'strategy': 'fast',
-            'description': 'Fast analysis (≤100 URLs)',
-            'estimated_time': '< 5 minutes'
-        }
-    elif url_count <= 500:
-        return {
-            'delay': 2.0,
-            'strategy': 'balanced',
-            'description': 'Balanced analysis (101-500 URLs)',
-            'estimated_time': '5-20 minutes'
-        }
-    else:  # > 500
-        return {
-            'delay': 3.0,
-            'strategy': 'thorough',
-            'description': 'Thorough analysis (500+ URLs)',
-            'estimated_time': '20+ minutes'
-        }
-
-# Sidebar configuration
-st.sidebar.header("⚙️ Analysis Configuration")
-
-# Content filtering option
-content_filtering = st.sidebar.checkbox("Filter to main content only", value=True,
-                                       help="Extract links only from main content, excluding navigation/footer")
-
-# Skip blocked pages option
-skip_blocked_pages = st.sidebar.checkbox("Skip blocked pages", value=False,
-                                        help="Skip pages that return 403 errors instead of retrying")
-
-# Inter-page delay option
-inter_page_delay = st.sidebar.slider("Delay between pages (seconds)", min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-                                    help="Additional delay between processing different pages")
-
-# Aggressive anti-bot mode
-aggressive_mode = st.sidebar.checkbox("Aggressive anti-bot mode", value=False,
-                                     help="Use more sophisticated browser simulation (slower but more effective)")
-
-# Enhanced analysis options
-if ANCHOR_ANALYSIS_AVAILABLE:
-    enable_anchor_analysis = st.sidebar.checkbox("Enable Anchor Text Analysis", value=True,
-                                               help="Analyze anchor text uniqueness and optimization")
-    enable_optimization_scoring = st.sidebar.checkbox("Enable Optimization Scoring", value=True,
-                                                    help="Score anchor text quality on multiple dimensions")
-else:
-    st.sidebar.warning("⚠️ Anchor text analysis unavailable (NLTK not installed)")
-    enable_anchor_analysis = False
-    enable_optimization_scoring = False
-
-if RECOMMENDATIONS_AVAILABLE:
-    enable_recommendations = st.sidebar.checkbox("Generate Recommendations", value=True,
-                                               help="Generate prioritized SEO recommendations")
-else:
-    st.sidebar.warning("⚠️ Recommendations unavailable (dependencies missing)")
-    enable_recommendations = False
-
-st.sidebar.header("📋 About")
-st.sidebar.info("""
-This enhanced analyzer provides:
-- ✅ Duplicate link detection
-- ✅ Anchor text uniqueness validation
-- ✅ Optimization scoring & recommendations
-- ✅ Sitemap processing
-- ✅ Comprehensive SEO insights
-- ✅ Export capabilities
-""")
-
-st.sidebar.header("⚠️ Disclaimer")
-st.sidebar.warning(
-    "**Web Scraping Ethics:**\n"
-    "- Only analyze websites you own or have permission to crawl\n"
-    "- Respect robots.txt files\n"
-    "- Use reasonable delays between requests\n"
-    "- This tool is for SEO analysis purposes only"
-)
-
-def parse_urls_from_text(text):
-    """Parse URLs from multiline text input."""
-    urls = []
-    for line in text.strip().split('\n'):
-        line = line.strip()
-        if line and not line.startswith('#'):
-            urls.append(line)
-    return urls
-
-def parse_urls_from_csv(csv_content):
-    """Parse URLs from CSV content, looking for URL column."""
-    try:
-        df = pd.read_csv(StringIO(csv_content))
-        # Look for URL column (case insensitive)
-        url_col = None
-        for col in df.columns:
-            if 'url' in col.lower():
-                url_col = col
-                break
-        if url_col:
-            return df[url_col].dropna().tolist()
-        else:
-            # If no URL column, assume first column
-            return df.iloc[:, 0].dropna().tolist()
-    except Exception as e:
-        st.error(f"Error parsing CSV: {str(e)}")
-        return []
-
-def validate_url(url):
-    """Validate if URL is properly formatted."""
-    try:
-        parsed = urlparse(url)
-        return bool(parsed.scheme and parsed.netloc)
-    except:
-        return False
-
-def get_domain(url):
-    """Extract domain from URL."""
-    parsed = urlparse(url)
-    return parsed.netloc.lower()
-
-def normalize_url(url):
-    """Normalize URL by removing fragments and trailing slashes."""
-    parsed = urlparse(url)
-    # Remove fragment
-    parsed = parsed._replace(fragment='')
-    # Remove trailing slash unless it's the root
-    path = parsed.path
-    if path.endswith('/') and len(path) > 1:
-        path = path.rstrip('/')
-    parsed = parsed._replace(path=path)
-    return urlunparse(parsed)
-
-# ----------- ROBOTS.TXT FUNCTIONS -----------
-
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def check_robots_txt(domain, user_agent='*'):
-    """Check if crawling is allowed for the domain."""
-    try:
-        robots_url = f"https://{domain}/robots.txt"
-        rp = RobotFileParser()
-        rp.set_url(robots_url)
-        rp.read()
-        return rp.can_fetch(user_agent, '/')
-    except:
-        # If robots.txt is not accessible, assume allowed
-        return True
-
-# ----------- WEB SCRAPING FUNCTIONS -----------
-
-def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False, aggressive_mode=False):
-    """Fetch page content with proper headers and aggressive retry logic."""
-    import random
-
-    # Extended user agents for aggressive mode
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-        'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/121.0',
-    ]
-
-    if aggressive_mode:
-        # Add more user agents and randomize order
-        additional_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        ]
-        user_agents.extend(additional_agents)
-        random.shuffle(user_agents)  # Randomize order
-
-    for attempt in range(max_retries):
-        try:
-            headers = {
-                'User-Agent': user_agents[attempt % len(user_agents)],
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0',
-                'DNT': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-            }
-
-            if aggressive_mode:
-                # Add more realistic headers
-                headers.update({
-                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                    'Sec-Ch-Ua-Mobile': '?0',
-                    'Sec-Ch-Ua-Platform': '"Windows"',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
-                })
-
-            response = requests.get(url, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            return response.text
-
-        except requests.HTTPError as e:
-            if e.response.status_code in [403, 429] and attempt < max_retries - 1:
-                # Longer wait for 403/429 errors
-                wait_time = min(2 ** attempt * 2, 30)  # Cap at 30 seconds
-                if aggressive_mode:
-                    wait_time = min(wait_time * 1.5, 45)  # Even longer in aggressive mode
-                st.warning(f"HTTP {e.response.status_code} for {url}, retrying in {wait_time}s...")
-                time.sleep(wait_time)
-                continue
-            else:
-                if skip_blocked and e.response.status_code in [403, 429]:
-                    st.warning(f"Skipping blocked page: {url}")
-                    return None  # Return None to indicate page should be skipped
-                raise Exception(f"HTTP {e.response.status_code} for {url}: {e.response.reason}")
-
-        except requests.RequestException as e:
-            if attempt < max_retries - 1:
-                wait_time = min(2 ** attempt, 15)  # Cap at 15 seconds
-                if aggressive_mode:
-                    wait_time = min(wait_time * 1.2, 20)  # Slightly longer in aggressive mode
-                time.sleep(wait_time)
-                continue
-            else:
-                if skip_blocked:
-                    st.warning(f"Skipping unreachable page: {url}")
-                    return None  # Return None to indicate page should be skipped
-                raise Exception(f"Failed to fetch {url} after {max_retries} attempts: {str(e)}")
-
-    if skip_blocked:
-        st.warning(f"Skipping blocked page after all retries: {url}")
-        return None
-    raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
-
-def extract_main_content_links(html_content, base_url, filter_content=True):
-    """Extract hyperlinks from page content, with optional main content filtering."""
-    soup = BeautifulSoup(html_content, 'lxml')
-    links = []
-
-    if filter_content:
-        # Remove unwanted elements
-        unwanted_selectors = [
-            'nav', 'header', '.nav', '.navigation', '.navbar', '.menu',
-            'footer', '.footer', '.site-footer',
-            'aside', '.sidebar', '.widget', '.widget-area',
-            '.comments', '.comment', '#comments',
-            '.related-posts', '.related', '.similar',
-            '.social-share', '.share', '.sharing',
-            '.advertisement', '.ads', '.ad',
-            '.breadcrumb', '.breadcrumbs',
-            '.pagination', '.pager'
-        ]
-
-        for selector in unwanted_selectors:
-            for element in soup.select(selector):
-                element.decompose()
-
-        # Try to find main content areas (be less restrictive)
-        content_selectors = [
-            'article', '.post-content', '.entry-content', '.content',
-            'main', '.main-content', '.article-content',
-            '.post', '.entry', '.single-post',
-            '.blog-post', '.article-body', '.post-body',
-            '[role="main"]', '.main',
-            '#content', '#main', '.container', '.wrapper'
-        ]
-
-        main_content = None
-
-        # Try to find main content container
-        for selector in content_selectors:
-            main_content = soup.select_one(selector)
-            if main_content:
-                break
-
-        # If no main content found, use body but be less aggressive in filtering
-        if not main_content:
-            main_content = soup.find('body')
-
-        # Only remove the most obvious non-content elements
-        if main_content:
-            # Remove script, style, and navigation elements
-            for element in main_content.find_all(['script', 'style', 'nav', '.nav', '.navigation']):
-                element.decompose()
-
-        content_to_search = main_content if main_content else soup
-    else:
-        # Extract from entire page
-        content_to_search = soup
-
-    if content_to_search:
-        # Extract links from content area
-        for a_tag in content_to_search.find_all('a', href=True):
-            href = a_tag.get('href')
-
-            # Improved anchor text extraction
-            anchor_text = ''
-
-            # First, try to get direct text content
-            if a_tag.string and a_tag.string.strip():
-                anchor_text = a_tag.string.strip()
-            else:
-                # If no direct text, get all text content but exclude certain elements
-                text_parts = []
-                for element in a_tag.contents:
-                    if isinstance(element, str):
-                        text_parts.append(element.strip())
-                    elif element.name not in ['img', 'svg', 'script', 'style']:
-                        text_parts.append(element.get_text(strip=True))
-
-                anchor_text = ' '.join(text_parts).strip()
-
-            # Clean up the anchor text
-            anchor_text = re.sub(r'\s+', ' ', anchor_text)  # Replace multiple whitespace with single space
-            anchor_text = anchor_text[:200] if len(anchor_text) > 200 else anchor_text  # Limit length
-
-            # Skip if anchor text is empty, too short, or generic
-            if not anchor_text or len(anchor_text) < 3:
-                continue
-
-            generic_terms = ['read more', 'click here', 'learn more', 'here', 'more', 'continue reading', 'see more']
-            if anchor_text.lower() in generic_terms:
-                continue
-
-            # Convert relative URLs to absolute
-            absolute_url = urljoin(base_url, href)
-
-            # Normalize the URL
-            normalized_url = normalize_url(absolute_url)
-
-            links.append({
-                'url': normalized_url,
-                'anchor': anchor_text
-            })
-
-    return links
-
-def filter_internal_links(links, domain):
-    """Filter links to only include internal ones."""
-    internal_links = []
-    for link in links:
-        link_domain = get_domain(link['url'])
-        if link_domain == domain:
-            internal_links.append(link)
-    return internal_links
-
-# ----------- ANALYSIS FUNCTIONS -----------
-
-def analyze_internal_links_enhanced(urls, progress_callback=None):
-    """Enhanced analysis function with new features."""
-    all_internal_links = []
-    errors = []
-
-    # Get dynamic configuration based on URL count
-    config = get_dynamic_config(len(urls))
-    delay = config['delay']
-
-    # Group URLs by domain
-    domain_groups = {}
-    for url in urls:
-        domain = get_domain(url)
-        if domain not in domain_groups:
-            domain_groups[domain] = []
-        domain_groups[domain].append(url)
-
-    total_urls = len(urls)
-    processed = 0
-
-    for domain, domain_urls in domain_groups.items():
-        # Check robots.txt for this domain
-        if not check_robots_txt(domain):
-            errors.append(f"Robots.txt disallows crawling for domain: {domain}")
-            continue
-
-        for url in domain_urls:
-            try:
-                # Fetch page content
-                html_content = fetch_page_content(url, skip_blocked=skip_blocked_pages, aggressive_mode=aggressive_mode)
-
-                # Skip if page was blocked and we're skipping blocked pages
-                if html_content is None:
-                    processed += 1
-                    if progress_callback:
-                        progress = processed / total_urls
-                        progress_callback(progress, f"Processed {processed}/{total_urls} URLs (skipped blocked page)")
-                    continue
-
-                # Extract all links
-                all_links = extract_main_content_links(html_content, url, content_filtering)
-
-                # Filter internal links
-                internal_links = filter_internal_links(all_links, domain)
-
-                # Add source information
-                for link in internal_links:
-                    link['source_url'] = url
-                    link['source_domain'] = domain
-                    all_internal_links.append(link)
-
-                processed += 1
-                if progress_callback:
-                    progress = processed / total_urls
-                    progress_callback(progress, f"Processed {processed}/{total_urls} URLs ({len(internal_links)} internal links found)")
-
-                # Rate limiting - use the longer of the two delays
-                actual_delay = max(delay, inter_page_delay)
-                time.sleep(actual_delay)
-
-            except Exception as e:
-                errors.append(f"Error processing {url}: {str(e)}")
-                processed += 1
-                if progress_callback:
-                    progress = processed / total_urls
-                    progress_callback(progress, f"Processed {processed}/{total_urls} URLs")
-
-    return all_internal_links, errors
-
-def find_duplicate_links(internal_links):
-    """Find duplicate links on the SAME page pointing to the same destination."""
-    from collections import defaultdict
-
-    # Group by source page (target_url), then by destination URL
-    page_destination_groups = defaultdict(lambda: defaultdict(list))
-
-    for link in internal_links:
-        page_destination_groups[link['source_url']][link['url']].append(link['anchor'])
-
-    # Find duplicates: same source page linking multiple times to same destination
-    duplicate_records = []
-    for target_url, destinations in page_destination_groups.items():
-        for dest_url, anchors in destinations.items():
-            if len(anchors) > 1:  # Multiple links to same destination from same page
-                for anchor in anchors:
-                    duplicate_records.append({
-                        'target_url': target_url,        # Page being analyzed
-                        'destination_url': dest_url,     # Where links point to
-                        'anchor_text_used': anchor       # Anchor text of each duplicate link
-                    })
-
-    # Sort by target URL, then destination URL
-    duplicate_records.sort(key=lambda x: (x['target_url'], x['destination_url']))
-
-    return duplicate_records
-
-def create_horizontal_dataframe(duplicate_records):
-    """Convert vertical duplicate records to horizontal format."""
-    if not duplicate_records:
-        return pd.DataFrame()
-
-    # Group by target URL
-    from collections import defaultdict
-    target_groups = defaultdict(list)
-
-    for record in duplicate_records:
-        target_groups[record['target_url']].append({
-            'destination_url': record['destination_url'],
-            'anchor_text_used': record['anchor_text_used']
+    <style>
+    .stAlert {
+        margin-top: 1rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    .issue-critical {
+        background-color: #ff4b4b;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+    }
+    .issue-high {
+        background-color: #ffa500;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+    }
+    .issue-medium {
+        background-color: #ffee58;
+        color: black;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+    }
+    .issue-low {
+        background-color: #4caf50;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+@dataclass
+class Link:
+    """Data class for storing link information"""
+    source_url: str
+    destination_url: str
+    anchor_text: str
+    position: str = "content"
+    attributes: Dict = None
+    
+    def __post_init__(self):
+        if self.attributes is None:
+            self.attributes = {}
+
+@dataclass
+class PageInfo:
+    """Data class for storing page information"""
+    url: str
+    title: str = ""
+    status_code: int = 0
+    response_time: float = 0.0
+    inbound_links: int = 0
+    outbound_links: int = 0
+    click_depth: int = -1
+
+class InternalLinkAnalyzer:
+    """Main analyzer class for internal link analysis"""
+    
+    def __init__(self, domain: str, max_workers: int = 5):
+        self.domain = self._normalize_domain(domain)
+        self.max_workers = max_workers
+        self.pages = {}
+        self.links = []
+        self.crawled_urls = set()
+        self.to_crawl = set()
+        self.issues = defaultdict(list)
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'InternalLinkAnalyzer/1.0 (Streamlit App)'
         })
-
-    # Create horizontal rows
-    horizontal_rows = []
-    max_duplicates = max(len(duplicates) for duplicates in target_groups.values())
-
-    for target_url, duplicates in target_groups.items():
-        row = {'target_url': target_url}
-
-        for i, duplicate in enumerate(duplicates):
-            row[f'destination_url_{i+1}'] = duplicate['destination_url']
-            row[f'anchor_text_used_{i+1}'] = duplicate['anchor_text_used']
-
-        # Fill empty columns with empty strings
-        for i in range(len(duplicates), max_duplicates):
-            row[f'destination_url_{i+1}'] = ''
-            row[f'anchor_text_used_{i+1}'] = ''
-
-        horizontal_rows.append(row)
-
-    return pd.DataFrame(horizontal_rows)
-
-def create_results_dataframe(duplicate_records):
-    """Create a pandas DataFrame from individual duplicate link records."""
-    if not duplicate_records:
-        return pd.DataFrame(columns=['Target URL', 'Destination URL', 'Anchor Text Used'])
-
-    return pd.DataFrame(duplicate_records)
-
-# ----------- EXPORT FUNCTIONS -----------
-
-def get_csv_download_link(df, filename):
-    """Generate CSV download link."""
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV</a>'
-    return href
-
-# ----------- MAIN APP INTERFACE -----------
-
-# URL Input Section
-st.header("📝 URL Input")
-
-tab1, tab2, tab3 = st.tabs(["Manual Entry", "File Upload", "Sitemap URL"])
-
-with tab1:
-    st.subheader("Enter URLs Manually")
-    st.markdown("Enter one URL per line:")
-    manual_urls = st.text_area(
-        "URLs",
-        height=150,
-        placeholder="https://example.com/page1\nhttps://example.com/page2\nhttps://other.com/page",
-        help="Enter each URL on a new line"
-    )
-
-    if st.button("Process Manual URLs", key="manual_btn"):
-        if manual_urls.strip():
-            urls = parse_urls_from_text(manual_urls)
-            valid_urls = [url for url in urls if validate_url(url)]
-            invalid_urls = [url for url in urls if not validate_url(url)]
-
-            if invalid_urls:
-                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}"
-                          + (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
-
-            if valid_urls:
-                st.session_state.urls = valid_urls  # No artificial limit
-                # Set dynamic configuration based on URL count
-                st.session_state.config = get_dynamic_config(len(valid_urls))
-                st.success(f"Loaded {len(st.session_state.urls)} valid URLs")
-                st.session_state.analysis_complete = False
-            else:
-                st.error("No valid URLs found")
-        else:
-            st.error("Please enter some URLs")
-
-with tab2:
-    st.subheader("Upload File")
-    st.markdown("Upload a CSV file with URLs or a text file with one URL per line:")
-
-    uploaded_file = st.file_uploader(
-        "Choose file",
-        type=['csv', 'txt'],
-        help="CSV should have a column named 'URL' or URLs in the first column. Text files should have one URL per line."
-    )
-
-    if uploaded_file is not None:
+        
+    def _normalize_domain(self, domain: str) -> str:
+        """Normalize domain URL"""
+        if not domain.startswith(('http://', 'https://')):
+            domain = 'https://' + domain
+        parsed = urlparse(domain)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    
+    def _normalize_url(self, url: str, base_url: str = None) -> str:
+        """Normalize and resolve relative URLs"""
+        if base_url:
+            url = urljoin(base_url, url)
+        
+        # Remove fragment
+        url = url.split('#')[0]
+        
+        # Remove trailing slash for consistency
+        if url.endswith('/') and url != self.domain + '/':
+            url = url[:-1]
+            
+        # Decode URL-encoded characters
+        url = unquote(url)
+        
+        return url
+    
+    def _is_internal_url(self, url: str) -> bool:
+        """Check if URL is internal to the domain"""
         try:
-            content = uploaded_file.read().decode('utf-8')
-
-            if uploaded_file.name.endswith('.csv'):
-                urls = parse_urls_from_csv(content)
+            parsed = urlparse(url)
+            domain_parsed = urlparse(self.domain)
+            return parsed.netloc == domain_parsed.netloc
+        except:
+            return False
+    
+    def fetch_sitemap_urls(self, sitemap_url: str) -> Set[str]:
+        """Fetch all URLs from a sitemap"""
+        urls = set()
+        
+        try:
+            response = self.session.get(sitemap_url, timeout=30)
+            response.raise_for_status()
+            
+            # Parse XML
+            root = ET.fromstring(response.content)
+            
+            # Handle sitemap index
+            if 'sitemapindex' in root.tag:
+                for sitemap in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                    if sitemap.text:
+                        # Recursively fetch URLs from nested sitemaps
+                        urls.update(self.fetch_sitemap_urls(sitemap.text))
             else:
-                urls = parse_urls_from_text(content)
-
-            valid_urls = [url for url in urls if validate_url(url)]
-            invalid_urls = [url for url in urls if not validate_url(url)]
-
-            if invalid_urls:
-                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}"
-                          + (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
-
-            if valid_urls:
-                st.session_state.urls = valid_urls  # No artificial limit
-                # Set dynamic configuration based on URL count
-                st.session_state.config = get_dynamic_config(len(valid_urls))
-                st.success(f"Loaded {len(st.session_state.urls)} valid URLs from file")
-                st.session_state.analysis_complete = False
-            else:
-                st.error("No valid URLs found in file")
-
+                # Regular sitemap
+                for url in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                    if url.text:
+                        normalized = self._normalize_url(url.text)
+                        if self._is_internal_url(normalized):
+                            urls.add(normalized)
         except Exception as e:
-            st.error(f"Error reading file: {str(e)}")
+            st.error(f"Error fetching sitemap: {str(e)}")
+            
+        return urls
+    
+    def crawl_page(self, url: str) -> Optional[PageInfo]:
+        """Crawl a single page and extract links"""
+        if url in self.crawled_urls:
+            return None
+            
+        try:
+            start_time = time.time()
+            response = self.session.get(url, timeout=30, allow_redirects=True)
+            response_time = time.time() - start_time
+            
+            # Store final URL after redirects
+            final_url = self._normalize_url(response.url)
+            self.crawled_urls.add(url)
+            
+            if final_url != url:
+                self.crawled_urls.add(final_url)
+            
+            # Create page info
+            page_info = PageInfo(
+                url=final_url,
+                status_code=response.status_code,
+                response_time=response_time
+            )
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Extract title
+                title_tag = soup.find('title')
+                if title_tag:
+                    page_info.title = title_tag.text.strip()
+                
+                # Extract all links
+                for link_tag in soup.find_all('a', href=True):
+                    href = link_tag['href']
+                    
+                    # Skip mailto, tel, and javascript links
+                    if href.startswith(('mailto:', 'tel:', 'javascript:', '#')):
+                        continue
+                    
+                    # Normalize destination URL
+                    dest_url = self._normalize_url(href, final_url)
+                    
+                    # Only process internal links
+                    if self._is_internal_url(dest_url):
+                        # Extract anchor text
+                        anchor_text = link_tag.get_text(strip=True)
+                        if not anchor_text and link_tag.find('img'):
+                            # Use alt text for image links
+                            img = link_tag.find('img')
+                            anchor_text = img.get('alt', '') if img else ''
+                        
+                        # Determine link position
+                        position = self._determine_link_position(link_tag)
+                        
+                        # Extract attributes
+                        attributes = {
+                            'rel': link_tag.get('rel', []),
+                            'target': link_tag.get('target', ''),
+                            'title': link_tag.get('title', '')
+                        }
+                        
+                        # Create link object
+                        link = Link(
+                            source_url=final_url,
+                            destination_url=dest_url,
+                            anchor_text=anchor_text,
+                            position=position,
+                            attributes=attributes
+                        )
+                        
+                        self.links.append(link)
+                        
+                        # Add to crawl queue if not already crawled
+                        if dest_url not in self.crawled_urls:
+                            self.to_crawl.add(dest_url)
+            
+            self.pages[final_url] = page_info
+            return page_info
+            
+        except requests.RequestException as e:
+            # Handle broken links
+            page_info = PageInfo(url=url, status_code=0)
+            self.pages[url] = page_info
+            self.issues['broken_links'].append({
+                'url': url,
+                'error': str(e),
+                'severity': 'critical'
+            })
+            return page_info
+        except Exception as e:
+            st.error(f"Error crawling {url}: {str(e)}")
+            return None
+    
+    def _determine_link_position(self, link_tag) -> str:
+        """Determine the position of a link in the page"""
+        # Check ancestors for common structural elements
+        for parent in link_tag.parents:
+            if parent.name == 'nav':
+                return 'navigation'
+            elif parent.name == 'header':
+                return 'header'
+            elif parent.name == 'footer':
+                return 'footer'
+            elif parent.name == 'aside':
+                return 'sidebar'
+            elif parent.name in ['article', 'main', 'section']:
+                return 'content'
+        
+        return 'content'
+    
+    def crawl_urls(self, urls: Set[str], progress_callback=None):
+        """Crawl multiple URLs concurrently"""
+        urls_to_crawl = list(urls - self.crawled_urls)
+        total = len(urls_to_crawl)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_url = {executor.submit(self.crawl_page, url): url for url in urls_to_crawl}
+            
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_url)):
+                if progress_callback:
+                    progress_callback(i + 1, total)
+                
+                # Add a small delay to be respectful
+                time.sleep(0.1)
+    
+    def analyze_duplicate_links(self):
+        """Analyze duplicate links from same source to same destination"""
+        link_pairs = defaultdict(list)
+        
+        for link in self.links:
+            key = (link.source_url, link.destination_url)
+            link_pairs[key].append(link)
+        
+        for (source, destination), links_list in link_pairs.items():
+            if len(links_list) > 1:
+                self.issues['duplicate_links'].append({
+                    'source_url': source,
+                    'destination_url': destination,
+                    'count': len(links_list),
+                    'anchor_texts': [link.anchor_text for link in links_list],
+                    'positions': [link.position for link in links_list],
+                    'severity': 'high'
+                })
+    
+    def analyze_duplicate_anchors(self):
+        """Analyze duplicate anchor texts"""
+        # Group by anchor text
+        anchor_groups = defaultdict(list)
+        
+        for link in self.links:
+            if link.anchor_text:  # Skip empty anchors
+                anchor_groups[link.anchor_text.lower()].append(link)
+        
+        for anchor_text, links_list in anchor_groups.items():
+            if len(links_list) > 1:
+                # Check if they point to the same destination
+                destinations = set(link.destination_url for link in links_list)
+                
+                if len(destinations) == 1:
+                    # Same anchor to same destination from different sources
+                    self.issues['duplicate_anchors_same_dest'].append({
+                        'anchor_text': anchor_text,
+                        'destination': list(destinations)[0],
+                        'sources': [link.source_url for link in links_list],
+                        'count': len(links_list),
+                        'severity': 'medium'
+                    })
+                else:
+                    # Same anchor to different destinations
+                    self.issues['duplicate_anchors_diff_dest'].append({
+                        'anchor_text': anchor_text,
+                        'destinations': list(destinations),
+                        'count': len(links_list),
+                        'severity': 'high'
+                    })
+        
+        # Also check for generic anchor texts
+        generic_anchors = ['click here', 'read more', 'learn more', 'here', 'link', 'more']
+        for link in self.links:
+            if link.anchor_text and link.anchor_text.lower() in generic_anchors:
+                self.issues['generic_anchors'].append({
+                    'source_url': link.source_url,
+                    'destination_url': link.destination_url,
+                    'anchor_text': link.anchor_text,
+                    'severity': 'low'
+                })
+    
+    def analyze_orphaned_pages(self):
+        """Find pages with no internal links pointing to them"""
+        # Get all destination URLs
+        linked_pages = set(link.destination_url for link in self.links)
+        
+        # Find pages that were crawled but have no inbound links
+        for page_url in self.pages:
+            if page_url != self.domain and page_url not in linked_pages:
+                self.issues['orphaned_pages'].append({
+                    'url': page_url,
+                    'title': self.pages[page_url].title,
+                    'severity': 'critical'
+                })
+    
+    def calculate_click_depth(self, start_url: str = None):
+        """Calculate click depth for all pages using BFS"""
+        if not start_url:
+            start_url = self.domain
+        
+        # Build adjacency list
+        graph = defaultdict(set)
+        for link in self.links:
+            graph[link.source_url].add(link.destination_url)
+        
+        # BFS to calculate depth
+        depths = {start_url: 0}
+        queue = [start_url]
+        visited = {start_url}
+        
+        while queue:
+            current = queue.pop(0)
+            current_depth = depths[current]
+            
+            for neighbor in graph[current]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    depths[neighbor] = current_depth + 1
+                    queue.append(neighbor)
+        
+        # Update page info with click depth
+        for url, depth in depths.items():
+            if url in self.pages:
+                self.pages[url].click_depth = depth
+        
+        # Find pages with excessive depth
+        for url, depth in depths.items():
+            if depth > 3:
+                self.issues['excessive_depth'].append({
+                    'url': url,
+                    'depth': depth,
+                    'title': self.pages[url].title if url in self.pages else '',
+                    'severity': 'high' if depth > 5 else 'medium'
+                })
+    
+    def analyze_link_distribution(self):
+        """Analyze the distribution of inbound and outbound links"""
+        # Count inbound and outbound links
+        inbound_count = Counter()
+        outbound_count = Counter()
+        
+        for link in self.links:
+            outbound_count[link.source_url] += 1
+            inbound_count[link.destination_url] += 1
+        
+        # Update page info
+        for url in self.pages:
+            self.pages[url].inbound_links = inbound_count.get(url, 0)
+            self.pages[url].outbound_links = outbound_count.get(url, 0)
+        
+        # Find issues
+        for url, count in outbound_count.items():
+            if count > 100:
+                self.issues['excessive_outbound_links'].append({
+                    'url': url,
+                    'count': count,
+                    'severity': 'medium'
+                })
+        
+        for url in self.pages:
+            if self.pages[url].outbound_links == 0 and url != self.domain:
+                self.issues['no_outbound_links'].append({
+                    'url': url,
+                    'title': self.pages[url].title,
+                    'severity': 'low'
+                })
+    
+    def check_broken_links(self):
+        """Identify broken links"""
+        for url, page_info in self.pages.items():
+            if page_info.status_code >= 400:
+                # Find all links pointing to this broken page
+                sources = [link.source_url for link in self.links if link.destination_url == url]
+                
+                self.issues['broken_links'].append({
+                    'url': url,
+                    'status_code': page_info.status_code,
+                    'linked_from': sources,
+                    'severity': 'critical'
+                })
+    
+    def generate_report(self) -> Dict:
+        """Generate comprehensive analysis report"""
+        total_pages = len(self.pages)
+        total_links = len(self.links)
+        
+        # Count issues by severity
+        severity_counts = defaultdict(int)
+        for issue_type, issues_list in self.issues.items():
+            for issue in issues_list:
+                severity_counts[issue.get('severity', 'low')] += 1
+        
+        report = {
+            'summary': {
+                'domain': self.domain,
+                'total_pages': total_pages,
+                'total_links': total_links,
+                'unique_links': len(set((l.source_url, l.destination_url) for l in self.links)),
+                'issues': {
+                    'critical': severity_counts['critical'],
+                    'high': severity_counts['high'],
+                    'medium': severity_counts['medium'],
+                    'low': severity_counts['low']
+                }
+            },
+            'issues': dict(self.issues),
+            'pages': {url: asdict(info) for url, info in self.pages.items()},
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return report
 
-with tab3:
-    st.subheader("Process Sitemap")
-    st.markdown("Enter a sitemap URL or domain to auto-discover sitemaps:")
-
-    sitemap_input = st.text_input(
-        "Sitemap URL or Domain",
-        placeholder="https://example.com/sitemap.xml or example.com",
-        help="Enter full sitemap URL or just domain to auto-discover"
+def create_network_graph(links: List[Link], pages: Dict[str, PageInfo]) -> go.Figure:
+    """Create an interactive network graph of internal links"""
+    G = nx.DiGraph()
+    
+    # Add nodes and edges
+    for link in links[:500]:  # Limit for performance
+        G.add_edge(link.source_url, link.destination_url)
+    
+    # Calculate layout
+    pos = nx.spring_layout(G, k=1, iterations=50)
+    
+    # Create edge trace
+    edge_trace = []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_trace.append(go.Scatter(
+            x=[x0, x1, None],
+            y=[y0, y1, None],
+            mode='lines',
+            line=dict(width=0.5, color='#888'),
+            hoverinfo='none'
+        ))
+    
+    # Create node trace
+    node_trace = go.Scatter(
+        x=[pos[node][0] for node in G.nodes()],
+        y=[pos[node][1] for node in G.nodes()],
+        mode='markers+text',
+        hoverinfo='text',
+        marker=dict(
+            showscale=True,
+            colorscale='YlOrRd',
+            size=10,
+            colorbar=dict(
+                thickness=15,
+                title='Click Depth',
+                xanchor='left',
+                titleside='right'
+            )
+        )
     )
-
-    if st.button("Process Sitemap", key="sitemap_btn"):
-        if sitemap_input.strip():
-            try:
-                processor = SitemapProcessor()
-
-                if '://' in sitemap_input:
-                    # Full sitemap URL provided
-                    if 'sitemap' in sitemap_input.lower():
-                        urls_data = processor.parse_sitemap(sitemap_input)
-                        urls = [item['url'] for item in urls_data if 'url' in item]
-                    else:
-                        st.error("Please provide a valid sitemap URL")
-                        urls = []
-                else:
-                    # Domain provided - auto-discover
-                    urls = processor.extract_urls_from_sitemaps(sitemap_input)
-
-                if urls:
-                    st.session_state.urls = urls
-                    st.session_state.config = get_dynamic_config(len(urls))
-                    st.success(f"Loaded {len(urls)} URLs from sitemap")
-                    st.session_state.analysis_complete = False
-                else:
-                    st.error("No URLs found in sitemap")
-
-            except Exception as e:
-                error_msg = str(e)
-                if "403 Forbidden" in error_msg:
-                    st.error("❌ **Access Blocked**: The website is blocking automated access to this sitemap. This is common with protected or high-security sites.")
-                    st.info("💡 **Suggestions**:\n"
-                           "- Try accessing the sitemap URL manually in your browser\n"
-                           "- The website may require special permissions or authentication\n"
-                           "- Consider using manual URL entry instead")
-                elif "Not a gzipped file" in error_msg:
-                    st.error("❌ **Sitemap Format Error**: The sitemap content couldn't be processed properly.")
-                    st.info("💡 **Suggestions**:\n"
-                           "- Try accessing the sitemap URL directly in your browser\n"
-                           "- The sitemap may be corrupted or in an unsupported format\n"
-                           "- Consider using manual URL entry for individual pages")
-                elif "Failed to parse XML" in error_msg:
-                    st.error("❌ **XML Parsing Error**: The sitemap contains invalid XML format.")
-                    st.info("💡 **Suggestions**:\n"
-                           "- Check if the sitemap URL is correct\n"
-                           "- The sitemap may be malformed or corrupted\n"
-                           "- Try a different sitemap URL from the same site")
-                else:
-                    st.error(f"❌ **Processing Error**: {error_msg}")
-                    st.info("💡 **General Suggestions**:\n"
-                           "- Verify the sitemap URL is accessible\n"
-                           "- Try using manual URL entry instead\n"
-                           "- Check if the website has changed its structure")
-
-# Display loaded URLs
-if st.session_state.urls:
-    st.header("📋 Loaded URLs")
-    st.write(f"Total URLs: {len(st.session_state.urls)}")
-
-    # Show domains
-    domains = list(set(get_domain(url) for url in st.session_state.urls))
-    st.write(f"Domains: {', '.join(domains)}")
-
-    with st.expander("Show URLs"):
-        for i, url in enumerate(st.session_state.urls, 1):
-            st.write(f"{i}. {url}")
-
-    # Analysis Section
-    st.header("🔍 Analysis")
-
-    if st.button("Start Analysis", type="primary"):
-        if not st.session_state.urls:
-            st.error("No URLs loaded")
+    
+    # Add node properties
+    node_colors = []
+    node_text = []
+    for node in G.nodes():
+        if node in pages:
+            depth = pages[node].click_depth
+            node_colors.append(depth if depth >= 0 else 10)
+            node_text.append(f"URL: {node}<br>Depth: {depth}<br>Title: {pages[node].title[:50]}")
         else:
+            node_colors.append(0)
+            node_text.append(node)
+    
+    node_trace.marker.color = node_colors
+    node_trace.text = node_text
+    
+    # Create figure
+    fig = go.Figure(data=edge_trace + [node_trace],
+                    layout=go.Layout(
+                        showlegend=False,
+                        hovermode='closest',
+                        margin=dict(b=0, l=0, r=0, t=0),
+                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        height=600
+                    ))
+    
+    return fig
+
+def export_to_csv(report: Dict) -> str:
+    """Export report to CSV format"""
+    output = StringIO()
+    
+    # Write summary
+    writer = csv.writer(output)
+    writer.writerow(['Internal Link Analysis Report'])
+    writer.writerow(['Generated', report['timestamp']])
+    writer.writerow([])
+    
+    # Write issues by type
+    for issue_type, issues_list in report['issues'].items():
+        if issues_list:
+            writer.writerow([f'{issue_type.upper().replace("_", " ")}'])
+            
+            if issue_type == 'duplicate_links':
+                writer.writerow(['Source URL', 'Destination URL', 'Count', 'Anchor Texts'])
+                for issue in issues_list:
+                    writer.writerow([
+                        issue['source_url'],
+                        issue['destination_url'],
+                        issue['count'],
+                        ', '.join(issue['anchor_texts'])
+                    ])
+            
+            elif issue_type == 'orphaned_pages':
+                writer.writerow(['URL', 'Title'])
+                for issue in issues_list:
+                    writer.writerow([issue['url'], issue.get('title', '')])
+            
+            elif issue_type == 'excessive_depth':
+                writer.writerow(['URL', 'Depth', 'Title'])
+                for issue in issues_list:
+                    writer.writerow([issue['url'], issue['depth'], issue.get('title', '')])
+            
+            writer.writerow([])
+    
+    return output.getvalue()
+
+# Streamlit App Interface
+def main():
+    st.title("🔗 Internal Link Analyzer")
+    st.markdown("Comprehensive analysis of your website's internal linking structure")
+    
+    # Sidebar configuration
+    with st.sidebar:
+        st.header("Configuration")
+        
+        input_method = st.radio(
+            "Input Method",
+            ["Enter URLs", "Sitemap URL"]
+        )
+        
+        if input_method == "Enter URLs":
+            urls_input = st.text_area(
+                "Enter URLs (one per line)",
+                height=200,
+                placeholder="https://example.com\nhttps://example.com/page1\nhttps://example.com/page2"
+            )
+        else:
+            sitemap_url = st.text_input(
+                "Sitemap URL",
+                placeholder="https://example.com/sitemap.xml"
+            )
+        
+        st.subheader("Crawl Settings")
+        max_workers = st.slider("Concurrent Requests", 1, 10, 5)
+        crawl_limit = st.number_input("Max Pages to Crawl", min_value=10, max_value=1000, value=100)
+        
+        analyze_btn = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
+    
+    # Main content area
+    if analyze_btn:
+        # Validate input
+        if input_method == "Enter URLs" and not urls_input:
+            st.error("Please enter at least one URL")
+            return
+        elif input_method == "Sitemap URL" and not sitemap_url:
+            st.error("Please enter a sitemap URL")
+            return
+        
+        # Initialize analyzer
+        if input_method == "Enter URLs":
+            urls = [url.strip() for url in urls_input.split('\n') if url.strip()]
+            domain = urls[0] if urls else None
+        else:
+            domain = urlparse(sitemap_url).scheme + "://" + urlparse(sitemap_url).netloc
+        
+        if not domain:
+            st.error("Could not determine domain")
+            return
+        
+        analyzer = InternalLinkAnalyzer(domain, max_workers)
+        
+        # Progress tracking
+        progress_container = st.container()
+        with progress_container:
+            st.info("🔍 Starting analysis...")
             progress_bar = st.progress(0)
             status_text = st.empty()
-
-            def progress_callback(progress, message):
-                progress_bar.progress(progress)
-                status_text.text(message)
-
-            with st.spinner("Analyzing internal links..."):
-                try:
-                    internal_links, errors = analyze_internal_links_enhanced(
-                        st.session_state.urls,
-                        progress_callback
-                    )
-
-                    duplicate_records = find_duplicate_links(internal_links)
-                    results_df = create_results_dataframe(duplicate_records)
-                    horizontal_df = create_horizontal_dataframe(duplicate_records)
-
-                    # Enhanced analysis
-                    enhanced_results = {
-                        'duplicate_records': duplicate_records,
-                        'anchor_issues': {},
-                        'optimization_scores': {},
-                        'recommendations': [],
-                        'site_summary': {}
-                    }
-
-                    if enable_anchor_analysis and ANCHOR_ANALYSIS_AVAILABLE and ANCHOR_ANALYZER_CLASS:
-                        analyzer = ANCHOR_ANALYZER_CLASS()
-                        enhanced_results['anchor_issues'] = analyzer.analyze_uniqueness(internal_links)
-
-                    if enable_optimization_scoring and ANCHOR_ANALYSIS_AVAILABLE and ANCHOR_ANALYZER_CLASS:
-                        analyzer = ANCHOR_ANALYZER_CLASS()
-                        for link in internal_links:
-                            key = f"{link['source_url']} -> {link['url']}"
-                            enhanced_results['optimization_scores'][key] = analyzer.score_anchor_text(
-                                link['anchor'],
-                                {'source_url': link['source_url'], 'target_url': link['url']}
-                            )
-
-                    # Generate site summary
-                    total_links = len(internal_links)
-                    duplicate_count = len(enhanced_results['duplicate_records'])
-                    enhanced_results['site_summary'] = {
-                        'total_internal_links': total_links,
-                        'duplicate_percentage': (duplicate_count / total_links * 100) if total_links > 0 else 0,
-                        'unique_anchors': len(set(link['anchor'].strip().lower() for link in internal_links if link['anchor'].strip())),
-                        'unique_anchor_percentage': 0  # Calculate this
-                    }
-
-                    if enable_recommendations and RECOMMENDATIONS_AVAILABLE:
-                        engine = RecommendationEngine()
-                        enhanced_results['recommendations'] = engine.generate_comprehensive_recommendations(
-                            enhanced_results['duplicate_records'],
-                            enhanced_results['anchor_issues'],
-                            enhanced_results['optimization_scores'],
-                            enhanced_results['site_summary']
-                        )
-
-                    st.session_state.results = {
-                        'duplicate_records': duplicate_records,
-                        'dataframe': results_df,
-                        'horizontal_dataframe': horizontal_df,
-                        'total_links': len(internal_links),
-                        'errors': errors,
-                        'enhanced_results': enhanced_results
-                    }
-                    st.session_state.analysis_complete = True
-
-                    progress_bar.empty()
-                    status_text.empty()
-
-                except Exception as e:
-                    st.error(f"Analysis failed: {str(e)}")
-                    progress_bar.empty()
-                    status_text.empty()
-
-# Results Section
-if st.session_state.analysis_complete and st.session_state.results:
-    results = st.session_state.results
-
-    # Create tabs for different result types
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Summary", "🔗 Duplicate Links", "📝 Anchor Analysis", "💡 Recommendations"
-    ])
-
-    with tab1:
-        # Summary dashboard
+        
+        # Fetch URLs to analyze
+        if input_method == "Sitemap URL":
+            status_text.text("Fetching sitemap...")
+            urls = analyzer.fetch_sitemap_urls(sitemap_url)
+            if not urls:
+                st.error("No URLs found in sitemap")
+                return
+            st.success(f"Found {len(urls)} URLs in sitemap")
+        else:
+            urls = set(urls)
+        
+        # Limit crawl
+        urls = set(list(urls)[:crawl_limit])
+        
+        # Crawl pages
+        def update_progress(current, total):
+            progress = current / total
+            progress_bar.progress(progress)
+            status_text.text(f"Crawling pages... {current}/{total}")
+        
+        analyzer.crawl_urls(urls, update_progress)
+        
+        # Run analyses
+        status_text.text("Analyzing duplicate links...")
+        analyzer.analyze_duplicate_links()
+        
+        status_text.text("Analyzing anchor texts...")
+        analyzer.analyze_duplicate_anchors()
+        
+        status_text.text("Finding orphaned pages...")
+        analyzer.analyze_orphaned_pages()
+        
+        status_text.text("Calculating click depth...")
+        analyzer.calculate_click_depth()
+        
+        status_text.text("Analyzing link distribution...")
+        analyzer.analyze_link_distribution()
+        
+        status_text.text("Checking for broken links...")
+        analyzer.check_broken_links()
+        
+        # Generate report
+        report = analyzer.generate_report()
+        
+        # Clear progress indicators
+        progress_container.empty()
+        
+        # Display results
+        st.success("✅ Analysis Complete!")
+        
+        # Summary metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Total Internal Links Found", results['total_links'])
+            st.metric("Pages Analyzed", report['summary']['total_pages'])
         with col2:
-            st.metric("Duplicate Links", len(results['duplicate_records']))
+            st.metric("Total Links", report['summary']['total_links'])
         with col3:
-            unique_anchors = results.get('enhanced_results', {}).get('site_summary', {}).get('unique_anchors', 0)
-            st.metric("Unique Anchors", unique_anchors)
+            st.metric("Unique Links", report['summary']['unique_links'])
         with col4:
-            avg_score = 0
-            if results.get('enhanced_results', {}).get('optimization_scores'):
-                scores = [score.get('overall', 0) for score in results['enhanced_results']['optimization_scores'].values()]
-                avg_score = sum(scores) / len(scores) if scores else 0
-            st.metric("Avg Optimization Score", f"{avg_score:.1f}")
+            st.metric("Total Issues", sum(report['summary']['issues'].values()))
+        
+        # Issue severity breakdown
+        st.subheader("📊 Issue Severity Breakdown")
+        severity_df = pd.DataFrame([
+            {'Severity': 'Critical', 'Count': report['summary']['issues']['critical'], 'Color': '#ff4b4b'},
+            {'Severity': 'High', 'Count': report['summary']['issues']['high'], 'Color': '#ffa500'},
+            {'Severity': 'Medium', 'Count': report['summary']['issues']['medium'], 'Color': '#ffee58'},
+            {'Severity': 'Low', 'Count': report['summary']['issues']['low'], 'Color': '#4caf50'}
+        ])
+        
+        fig_severity = px.bar(
+            severity_df, 
+            x='Severity', 
+            y='Count',
+            color='Severity',
+            color_discrete_map={
+                'Critical': '#ff4b4b',
+                'High': '#ffa500',
+                'Medium': '#ffee58',
+                'Low': '#4caf50'
+            }
+        )
+        st.plotly_chart(fig_severity, use_container_width=True)
+        
+        # Detailed issues
+        st.subheader("🔍 Detailed Issues")
+        
+        tabs = st.tabs([
+            "Duplicate Links",
+            "Duplicate Anchors",
+            "Orphaned Pages",
+            "Click Depth",
+            "Link Distribution",
+            "Broken Links"
+        ])
+        
+        with tabs[0]:
+            if report['issues'].get('duplicate_links'):
+                st.warning(f"Found {len(report['issues']['duplicate_links'])} instances of duplicate links")
+                
+                for issue in report['issues']['duplicate_links'][:10]:
+                    with st.expander(f"{issue['source_url'][:50]}... → {issue['destination_url'][:50]}..."):
+                        st.write(f"**Count:** {issue['count']}")
+                        st.write(f"**Anchor Texts:** {', '.join(issue['anchor_texts'])}")
+                        st.write(f"**Positions:** {', '.join(issue['positions'])}")
+            else:
+                st.success("No duplicate links found!")
+        
+        with tabs[1]:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Same Anchor → Same Destination")
+                if report['issues'].get('duplicate_anchors_same_dest'):
+                    for issue in report['issues']['duplicate_anchors_same_dest'][:10]:
+                        with st.expander(f"'{issue['anchor_text']}'"):
+                            st.write(f"**Destination:** {issue['destination']}")
+                            st.write(f"**Used {issue['count']} times from different sources**")
+                else:
+                    st.success("No issues found!")
+            
+            with col2:
+                st.subheader("Same Anchor → Different Destinations")
+                if report['issues'].get('duplicate_anchors_diff_dest'):
+                    for issue in report['issues']['duplicate_anchors_diff_dest'][:10]:
+                        with st.expander(f"'{issue['anchor_text']}'"):
+                            st.write(f"**Used for {issue['count']} different destinations:**")
+                            for dest in issue['destinations'][:5]:
+                                st.write(f"• {dest}")
+                else:
+                    st.success("No issues found!")
+        
+        with tabs[2]:
+            if report['issues'].get('orphaned_pages'):
+                st.error(f"Found {len(report['issues']['orphaned_pages'])} orphaned pages")
+                
+                orphaned_df = pd.DataFrame(report['issues']['orphaned_pages'])
+                st.dataframe(orphaned_df[['url', 'title']], use_container_width=True)
+            else:
+                st.success("No orphaned pages found!")
+        
+        with tabs[3]:
+            if report['issues'].get('excessive_depth'):
+                st.warning(f"Found {len(report['issues']['excessive_depth'])} pages with excessive click depth")
+                
+                depth_df = pd.DataFrame(report['issues']['excessive_depth'])
+                fig_depth = px.histogram(
+                    depth_df,
+                    x='depth',
+                    nbins=20,
+                    title="Click Depth Distribution"
+                )
+                st.plotly_chart(fig_depth, use_container_width=True)
+                
+                st.dataframe(
+                    depth_df[['url', 'depth', 'title']].sort_values('depth', ascending=False),
+                    use_container_width=True
+                )
+            else:
+                st.success("All pages are within acceptable click depth!")
+        
+        with tabs[4]:
+            # Create distribution charts
+            pages_df = pd.DataFrame([asdict(page) for page in analyzer.pages.values()])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                fig_inbound = px.histogram(
+                    pages_df,
+                    x='inbound_links',
+                    nbins=30,
+                    title="Inbound Links Distribution"
+                )
+                st.plotly_chart(fig_inbound, use_container_width=True)
+            
+            with col2:
+                fig_outbound = px.histogram(
+                    pages_df,
+                    x='outbound_links',
+                    nbins=30,
+                    title="Outbound Links Distribution"
+                )
+                st.plotly_chart(fig_outbound, use_container_width=True)
+            
+            if report['issues'].get('excessive_outbound_links'):
+                st.warning("Pages with excessive outbound links:")
+                for issue in report['issues']['excessive_outbound_links']:
+                    st.write(f"• {issue['url']}: {issue['count']} outbound links")
+        
+        with tabs[5]:
+            if report['issues'].get('broken_links'):
+                st.error(f"Found {len(report['issues']['broken_links'])} broken links")
+                
+                for issue in report['issues']['broken_links']:
+                    with st.expander(f"{issue['url']} - Status: {issue.get('status_code', 'Error')}"):
+                        st.write("**Linked from:**")
+                        for source in issue.get('linked_from', [])[:10]:
+                            st.write(f"• {source}")
+            else:
+                st.success("No broken links found!")
+        
+        # Network visualization
+        st.subheader("🕸️ Link Network Visualization")
+        if len(analyzer.links) > 0:
+            with st.spinner("Generating network graph..."):
+                fig_network = create_network_graph(analyzer.links, analyzer.pages)
+                st.plotly_chart(fig_network, use_container_width=True)
+        
+        # Export options
+        st.subheader("📥 Export Report")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            csv_data = export_to_csv(report)
+            st.download_button(
+                label="Download CSV Report",
+                data=csv_data,
+                file_name=f"link_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            json_data = json.dumps(report, indent=2)
+            st.download_button(
+                label="Download JSON Report",
+                data=json_data,
+                file_name=f"link_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+        
+        with col3:
+            # Store report in session state for reference
+            st.session_state['last_report'] = report
+            st.success("Report saved to session")
 
-    with tab2:
-        # Existing duplicate links display
-        if results['duplicate_records']:
-            st.dataframe(create_results_dataframe(results['duplicate_records']))
-        else:
-            st.success("✅ No duplicate internal links found!")
-
-    with tab3:
-        # New anchor text analysis
-        enhanced = results.get('enhanced_results', {})
-        if enhanced.get('anchor_issues'):
-            for issue_type, issues in enhanced['anchor_issues'].items():
-                st.subheader(f"⚠️ {issue_type.replace('_', ' ').title()}")
-                for issue in issues:
-                    with st.expander(f"🔍 {issue['anchor_text']}"):
-                        st.write(f"**Used for {issue['unique_destinations']} different destinations**")
-                        st.write("**Affected links:**")
-                        for link in issue['links']:
-                            st.write(f"- {link['source_url']} → {link['url']}")
-        else:
-            st.success("✅ No anchor text uniqueness issues found!")
-
-    with tab4:
-        # Recommendations
-        enhanced = results.get('enhanced_results', {})
-        if enhanced.get('recommendations'):
-            engine = RecommendationEngine()
-            action_plan_df = engine.create_action_plan(enhanced['recommendations'])
-
-            st.subheader("🎯 Action Plan")
-            st.dataframe(action_plan_df)
-
-            # Export action plan
-            st.subheader("💾 Export Action Plan")
-            csv_link = get_csv_download_link(action_plan_df, 'seo_action_plan.csv')
-            st.markdown(csv_link, unsafe_allow_html=True)
-        else:
-            st.info("No specific recommendations generated.")
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666;">
-    <p>Enhanced Internal Link Analyzer - Advanced SEO Tool</p>
-    <p><small>Use responsibly and respect website terms of service</small></p>
-</div>
-""", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()

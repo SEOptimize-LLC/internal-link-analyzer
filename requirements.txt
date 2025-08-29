@@ -1,15 +1,7 @@
-# Streamlit Cloud Optimized Requirements
-# Minimal dependencies to avoid conflicts and deployment issues
-
-streamlit==1.28.1
+streamlit==1.32.0
+pandas==2.2.0
 requests==2.31.0
-beautifulsoup4==4.12.2
-pandas==2.0.3
-lxml==4.9.4
-
-# Note: Using exact versions known to work well with Streamlit Cloud
-# Heavy packages removed to prevent deployment failures:
-# - nltk (requires data downloads)
-# - openpyxl (can cause conflicts)
-# - reportlab (resource intensive)
-# - defusedxml (not essential)
+beautifulsoup4==4.12.3
+lxml==5.1.0
+plotly==5.19.0
+networkx==3.2.1
