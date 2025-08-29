@@ -8,27 +8,35 @@ import time
 import re
 from io import StringIO
 import base64
+from collections import defaultdict
+
+# Import our enhanced modules
+from sitemap_processor import SitemapProcessor
+from anchor_text_analyzer import AnchorTextAnalyzer
+from recommendation_engine import RecommendationEngine
 
 # Page configuration
 st.set_page_config(
-    page_title="Internal Link Analyzer",
+    page_title="Enhanced Internal Link Analyzer",
     page_icon="🔗",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state variables at the start
+# Initialize session state variables
 if 'urls' not in st.session_state:
     st.session_state.urls = []
 if 'results' not in st.session_state:
     st.session_state.results = None
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
+if 'config' not in st.session_state:
+    st.session_state.config = None
 
-st.title("Internal Link Analyzer")
+st.title("Enhanced Internal Link Analyzer")
 st.markdown("""
-This tool analyzes internal hyperlinks on your website URLs to identify **duplicate links on the same page** pointing to identical destinations.
-This helps identify genuine SEO issues where multiple links to the same URL from one page dilute link equity.
+This advanced tool analyzes internal hyperlinks on your website URLs to identify **duplicate links** and **anchor text optimization opportunities**.
+It provides comprehensive SEO insights and actionable recommendations for improving your internal linking strategy.
 """)
 
 # ----------- DYNAMIC CONFIGURATION -----------
@@ -57,7 +65,7 @@ def get_dynamic_config(url_count):
             'estimated_time': '20+ minutes'
         }
 
-# Sidebar configuration (now informational)
+# Sidebar configuration
 st.sidebar.header("⚙️ Analysis Configuration")
 
 # Content filtering option
@@ -72,32 +80,27 @@ skip_blocked_pages = st.sidebar.checkbox("Skip blocked pages", value=False,
 inter_page_delay = st.sidebar.slider("Delay between pages (seconds)", min_value=1.0, max_value=10.0, value=3.0, step=0.5,
                                     help="Additional delay between processing different pages")
 
-# This will be populated dynamically based on loaded URLs
-if 'config' not in st.session_state:
-    st.session_state.config = None
+# Aggressive anti-bot mode
+aggressive_mode = st.sidebar.checkbox("Aggressive anti-bot mode", value=False,
+                                     help="Use more sophisticated browser simulation (slower but more effective)")
 
-if st.session_state.config:
-    config = st.session_state.config
-    st.sidebar.success(f"📊 **{config['description']}**")
-    st.sidebar.info(f"⏱️ **Estimated time:** {config['estimated_time']}")
-    st.sidebar.info(f"⏳ **Delay between requests:** {config['delay']}s")
-    st.sidebar.info(f"🎯 **Strategy:** {config['strategy'].title()}")
-
-    if config['strategy'] == 'thorough':
-        st.sidebar.warning(
-            "⚠️ Large dataset detected. Analysis will take longer but be more thorough."
-        )
-else:
-    st.sidebar.info("📝 Load your URLs to see automatic configuration.")
+# Enhanced analysis options
+enable_anchor_analysis = st.sidebar.checkbox("Enable Anchor Text Analysis", value=True,
+                                           help="Analyze anchor text uniqueness and optimization")
+enable_optimization_scoring = st.sidebar.checkbox("Enable Optimization Scoring", value=True,
+                                                help="Score anchor text quality on multiple dimensions")
+enable_recommendations = st.sidebar.checkbox("Generate Recommendations", value=True,
+                                           help="Generate prioritized SEO recommendations")
 
 st.sidebar.header("📋 About")
 st.sidebar.info("""
-This app analyzes internal links on provided URLs to find duplicates that may dilute link equity.
-- Supports manual URL entry and file uploads (CSV/txt)
-- Handles large datasets (up to 1000 URLs)
-- Respects robots.txt files
-- Identifies duplicate internal links with source anchors
-- Exports results to CSV
+This enhanced analyzer provides:
+- ✅ Duplicate link detection
+- ✅ Anchor text uniqueness validation
+- ✅ Optimization scoring & recommendations
+- ✅ Sitemap processing
+- ✅ Comprehensive SEO insights
+- ✅ Export capabilities
 """)
 
 st.sidebar.header("⚠️ Disclaimer")
@@ -179,8 +182,11 @@ def check_robots_txt(domain, user_agent='*'):
 
 # ----------- WEB SCRAPING FUNCTIONS -----------
 
-def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
+def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False, aggressive_mode=False):
     """Fetch page content with proper headers and aggressive retry logic."""
+    import random
+
+    # Extended user agents for aggressive mode
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -189,6 +195,17 @@ def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
         'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/121.0',
     ]
+
+    if aggressive_mode:
+        # Add more user agents and randomize order
+        additional_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        ]
+        user_agents.extend(additional_agents)
+        random.shuffle(user_agents)  # Randomize order
 
     for attempt in range(max_retries):
         try:
@@ -207,6 +224,19 @@ def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
                 'Sec-Fetch-User': '?1',
             }
 
+            if aggressive_mode:
+                # Add more realistic headers
+                headers.update({
+                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1',
+                })
+
             response = requests.get(url, headers=headers, timeout=timeout)
             response.raise_for_status()
             return response.text
@@ -215,6 +245,8 @@ def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
             if e.response.status_code in [403, 429] and attempt < max_retries - 1:
                 # Longer wait for 403/429 errors
                 wait_time = min(2 ** attempt * 2, 30)  # Cap at 30 seconds
+                if aggressive_mode:
+                    wait_time = min(wait_time * 1.5, 45)  # Even longer in aggressive mode
                 st.warning(f"HTTP {e.response.status_code} for {url}, retrying in {wait_time}s...")
                 time.sleep(wait_time)
                 continue
@@ -227,6 +259,8 @@ def fetch_page_content(url, timeout=20, max_retries=5, skip_blocked=False):
         except requests.RequestException as e:
             if attempt < max_retries - 1:
                 wait_time = min(2 ** attempt, 15)  # Cap at 15 seconds
+                if aggressive_mode:
+                    wait_time = min(wait_time * 1.2, 20)  # Slightly longer in aggressive mode
                 time.sleep(wait_time)
                 continue
             else:
@@ -354,8 +388,8 @@ def filter_internal_links(links, domain):
 
 # ----------- ANALYSIS FUNCTIONS -----------
 
-def analyze_internal_links(urls, progress_callback=None):
-    """Main analysis function."""
+def analyze_internal_links_enhanced(urls, progress_callback=None):
+    """Enhanced analysis function with new features."""
     all_internal_links = []
     errors = []
 
@@ -383,7 +417,7 @@ def analyze_internal_links(urls, progress_callback=None):
         for url in domain_urls:
             try:
                 # Fetch page content
-                html_content = fetch_page_content(url, skip_blocked=skip_blocked_pages)
+                html_content = fetch_page_content(url, skip_blocked=skip_blocked_pages, aggressive_mode=aggressive_mode)
 
                 # Skip if page was blocked and we're skipping blocked pages
                 if html_content is None:
@@ -506,7 +540,7 @@ def get_csv_download_link(df, filename):
 # URL Input Section
 st.header("📝 URL Input")
 
-tab1, tab2 = st.tabs(["Manual Entry", "File Upload"])
+tab1, tab2, tab3 = st.tabs(["Manual Entry", "File Upload", "Sitemap URL"])
 
 with tab1:
     st.subheader("Enter URLs Manually")
@@ -525,8 +559,8 @@ with tab1:
             invalid_urls = [url for url in urls if not validate_url(url)]
 
             if invalid_urls:
-                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}" +
-                          (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
+                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}"
+                          + (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
 
             if valid_urls:
                 st.session_state.urls = valid_urls  # No artificial limit
@@ -562,8 +596,8 @@ with tab2:
             invalid_urls = [url for url in urls if not validate_url(url)]
 
             if invalid_urls:
-                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}" +
-                          (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
+                st.warning(f"Invalid URLs found and skipped: {', '.join(invalid_urls[:5])}"
+                          + (f" and {len(invalid_urls)-5} more" if len(invalid_urls) > 5 else ""))
 
             if valid_urls:
                 st.session_state.urls = valid_urls  # No artificial limit
@@ -576,6 +610,44 @@ with tab2:
 
         except Exception as e:
             st.error(f"Error reading file: {str(e)}")
+
+with tab3:
+    st.subheader("Process Sitemap")
+    st.markdown("Enter a sitemap URL or domain to auto-discover sitemaps:")
+
+    sitemap_input = st.text_input(
+        "Sitemap URL or Domain",
+        placeholder="https://example.com/sitemap.xml or example.com",
+        help="Enter full sitemap URL or just domain to auto-discover"
+    )
+
+    if st.button("Process Sitemap", key="sitemap_btn"):
+        if sitemap_input.strip():
+            try:
+                processor = SitemapProcessor()
+
+                if '://' in sitemap_input:
+                    # Full sitemap URL provided
+                    if 'sitemap' in sitemap_input.lower():
+                        urls_data = processor.parse_sitemap(sitemap_input)
+                        urls = [item['url'] for item in urls_data if 'url' in item]
+                    else:
+                        st.error("Please provide a valid sitemap URL")
+                        urls = []
+                else:
+                    # Domain provided - auto-discover
+                    urls = processor.extract_urls_from_sitemaps(sitemap_input)
+
+                if urls:
+                    st.session_state.urls = urls
+                    st.session_state.config = get_dynamic_config(len(urls))
+                    st.success(f"Loaded {len(urls)} URLs from sitemap")
+                    st.session_state.analysis_complete = False
+                else:
+                    st.error("No URLs found in sitemap")
+
+            except Exception as e:
+                st.error(f"Error processing sitemap: {str(e)}")
 
 # Display loaded URLs
 if st.session_state.urls:
@@ -606,7 +678,7 @@ if st.session_state.urls:
 
             with st.spinner("Analyzing internal links..."):
                 try:
-                    internal_links, errors = analyze_internal_links(
+                    internal_links, errors = analyze_internal_links_enhanced(
                         st.session_state.urls,
                         progress_callback
                     )
@@ -615,12 +687,54 @@ if st.session_state.urls:
                     results_df = create_results_dataframe(duplicate_records)
                     horizontal_df = create_horizontal_dataframe(duplicate_records)
 
+                    # Enhanced analysis
+                    enhanced_results = {
+                        'duplicate_records': duplicate_records,
+                        'anchor_issues': {},
+                        'optimization_scores': {},
+                        'recommendations': [],
+                        'site_summary': {}
+                    }
+
+                    if enable_anchor_analysis:
+                        analyzer = AnchorTextAnalyzer()
+                        enhanced_results['anchor_issues'] = analyzer.analyze_uniqueness(internal_links)
+
+                    if enable_optimization_scoring:
+                        analyzer = AnchorTextAnalyzer()
+                        for link in internal_links:
+                            key = f"{link['source_url']} -> {link['url']}"
+                            enhanced_results['optimization_scores'][key] = analyzer.score_anchor_text(
+                                link['anchor'],
+                                {'source_url': link['source_url'], 'target_url': link['url']}
+                            )
+
+                    # Generate site summary
+                    total_links = len(internal_links)
+                    duplicate_count = len(enhanced_results['duplicate_records'])
+                    enhanced_results['site_summary'] = {
+                        'total_internal_links': total_links,
+                        'duplicate_percentage': (duplicate_count / total_links * 100) if total_links > 0 else 0,
+                        'unique_anchors': len(set(link['anchor'].strip().lower() for link in internal_links if link['anchor'].strip())),
+                        'unique_anchor_percentage': 0  # Calculate this
+                    }
+
+                    if enable_recommendations:
+                        engine = RecommendationEngine()
+                        enhanced_results['recommendations'] = engine.generate_comprehensive_recommendations(
+                            enhanced_results['duplicate_records'],
+                            enhanced_results['anchor_issues'],
+                            enhanced_results['optimization_scores'],
+                            enhanced_results['site_summary']
+                        )
+
                     st.session_state.results = {
                         'duplicate_records': duplicate_records,
                         'dataframe': results_df,
                         'horizontal_dataframe': horizontal_df,
                         'total_links': len(internal_links),
-                        'errors': errors
+                        'errors': errors,
+                        'enhanced_results': enhanced_results
                     }
                     st.session_state.analysis_complete = True
 
@@ -636,62 +750,72 @@ if st.session_state.urls:
 if st.session_state.analysis_complete and st.session_state.results:
     results = st.session_state.results
 
-    st.header("📊 Results")
+    # Create tabs for different result types
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Summary", "🔗 Duplicate Links", "📝 Anchor Analysis", "💡 Recommendations"
+    ])
 
-    # Summary
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Internal Links Found", results['total_links'])
-    with col2:
-        # Count unique target URLs that have duplicate links
-        unique_targets = len(set(record['target_url'] for record in results['duplicate_records']))
-        st.metric("Pages with Duplicate Links", unique_targets)
-    with col3:
-        st.metric("Total Duplicate Link Instances", len(results['duplicate_records']))
-
-    # Debug information
-    st.info(f"🔍 **Debug Info:** Found {len(results['duplicate_records'])} duplicate link instances across {results['total_links']} total internal links from {len(results['errors'])} errors")
-
-    # Errors
-    if results['errors']:
-        with st.expander("⚠️ Errors Encountered"):
-            for error in results['errors'][:10]:  # Show first 10 errors
-                st.write(f"• {error}")
-            if len(results['errors']) > 10:
-                st.write(f"... and {len(results['errors']) - 10} more errors")
-
-    # Results table
-    if 'horizontal_dataframe' in results and not results['horizontal_dataframe'].empty:
-        st.subheader("Duplicate Internal Links")
-        st.markdown("*Each row shows a target URL with all its duplicate links horizontally*")
-
-        # Display the horizontal dataframe
-        st.dataframe(results['horizontal_dataframe'], use_container_width=True)
-
-        # Export
-        st.subheader("💾 Export Results")
-        col1, col2 = st.columns(2)
-
+    with tab1:
+        # Summary dashboard
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown("**CSV Export:**")
-            csv_link = get_csv_download_link(
-                results['horizontal_dataframe'],
-                'duplicate_internal_links.csv'
-            )
-            st.markdown(csv_link, unsafe_allow_html=True)
-
+            st.metric("Total Internal Links Found", results['total_links'])
         with col2:
-            st.markdown("**Excel Export:**")
-            # For Excel, we'd need openpyxl, but for now just CSV
-            st.markdown("Coming soon - use CSV for now")
-else:
-    st.success("✅ No duplicate internal links found! Each internal link is unique.")
+            st.metric("Duplicate Links", len(results['duplicate_records']))
+        with col3:
+            unique_anchors = results.get('enhanced_results', {}).get('site_summary', {}).get('unique_anchors', 0)
+            st.metric("Unique Anchors", unique_anchors)
+        with col4:
+            avg_score = 0
+            if results.get('enhanced_results', {}).get('optimization_scores'):
+                scores = [score.get('overall', 0) for score in results['enhanced_results']['optimization_scores'].values()]
+                avg_score = sum(scores) / len(scores) if scores else 0
+            st.metric("Avg Optimization Score", f"{avg_score:.1f}")
+
+    with tab2:
+        # Existing duplicate links display
+        if results['duplicate_records']:
+            st.dataframe(create_results_dataframe(results['duplicate_records']))
+        else:
+            st.success("✅ No duplicate internal links found!")
+
+    with tab3:
+        # New anchor text analysis
+        enhanced = results.get('enhanced_results', {})
+        if enhanced.get('anchor_issues'):
+            for issue_type, issues in enhanced['anchor_issues'].items():
+                st.subheader(f"⚠️ {issue_type.replace('_', ' ').title()}")
+                for issue in issues:
+                    with st.expander(f"🔍 {issue['anchor_text']}"):
+                        st.write(f"**Used for {issue['unique_destinations']} different destinations**")
+                        st.write("**Affected links:**")
+                        for link in issue['links']:
+                            st.write(f"- {link['source_url']} → {link['url']}")
+        else:
+            st.success("✅ No anchor text uniqueness issues found!")
+
+    with tab4:
+        # Recommendations
+        enhanced = results.get('enhanced_results', {})
+        if enhanced.get('recommendations'):
+            engine = RecommendationEngine()
+            action_plan_df = engine.create_action_plan(enhanced['recommendations'])
+
+            st.subheader("🎯 Action Plan")
+            st.dataframe(action_plan_df)
+
+            # Export action plan
+            st.subheader("💾 Export Action Plan")
+            csv_link = get_csv_download_link(action_plan_df, 'seo_action_plan.csv')
+            st.markdown(csv_link, unsafe_allow_html=True)
+        else:
+            st.info("No specific recommendations generated.")
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666;">
-    <p>Internal Link Analyzer - SEO Tool for identifying diluted link equity</p>
+    <p>Enhanced Internal Link Analyzer - Advanced SEO Tool</p>
     <p><small>Use responsibly and respect website terms of service</small></p>
 </div>
 """, unsafe_allow_html=True)
