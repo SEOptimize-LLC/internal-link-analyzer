@@ -15,20 +15,15 @@ from sitemap_processor import SitemapProcessor
 
 # Import optional modules with fallbacks
 try:
-    from anchor_text_analyzer import AnchorTextAnalyzer
+    # Try lite version first (works without NLTK)
+    from anchor_text_analyzer_lite import AnchorTextAnalyzerLite
     ANCHOR_ANALYSIS_AVAILABLE = True
-    ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzer
+    ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzerLite
+    print("Using lite anchor text analyzer")
 except ImportError:
-    try:
-        # Fallback to lite version without NLTK
-        from anchor_text_analyzer_lite import AnchorTextAnalyzerLite
-        ANCHOR_ANALYSIS_AVAILABLE = True
-        ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzerLite
-        print("Using lite anchor text analyzer (NLTK not available)")
-    except ImportError:
-        ANCHOR_ANALYSIS_AVAILABLE = False
-        ANCHOR_ANALYZER_CLASS = None
-        print("Warning: Anchor text analysis not available")
+    ANCHOR_ANALYSIS_AVAILABLE = False
+    ANCHOR_ANALYZER_CLASS = None
+    print("Warning: Anchor text analysis not available")
 
 try:
     from recommendation_engine import RecommendationEngine
