@@ -55,10 +55,28 @@ A comprehensive Streamlit web application that analyzes internal hyperlinks on w
    ```
 
 ### Streamlit Cloud Deployment
-1. Push code to GitHub
-2. Connect to Streamlit Cloud
-3. Deploy from your repository
-4. The app will automatically install dependencies from `requirements.txt`
+1. **Prepare your repository**:
+   - Ensure all files are in the root directory
+   - Make sure `requirements.txt` and `packages.txt` are present
+   - Test locally first: `streamlit run app.py`
+
+2. **Deploy to Streamlit Cloud**:
+   - Push code to GitHub
+   - Go to [share.streamlit.io](https://share.streamlit.io)
+   - Connect your GitHub repository
+   - Select the repository and set main file path to `app.py`
+   - Click "Deploy"
+
+3. **Troubleshooting Streamlit Cloud Issues**:
+   - **Memory Errors**: Reduce URL batch sizes or add delays
+   - **Import Errors**: Check that all dependencies are in `requirements.txt`
+   - **Timeout Errors**: Increase timeout values in the app settings
+   - **403 Errors**: The app handles these automatically with user agent rotation
+
+4. **Advanced Configuration**:
+   - The app automatically adapts to Streamlit Cloud's resource limits
+   - Optional features (NLTK-dependent) gracefully disable if dependencies are missing
+   - All core functionality works without heavy packages
 
 ## 📖 Usage
 

@@ -12,8 +12,30 @@ from collections import defaultdict
 
 # Import our enhanced modules
 from sitemap_processor import SitemapProcessor
-from anchor_text_analyzer import AnchorTextAnalyzer
-from recommendation_engine import RecommendationEngine
+
+# Import optional modules with fallbacks
+try:
+    from anchor_text_analyzer import AnchorTextAnalyzer
+    ANCHOR_ANALYSIS_AVAILABLE = True
+    ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzer
+except ImportError:
+    try:
+        # Fallback to lite version without NLTK
+        from anchor_text_analyzer_lite import AnchorTextAnalyzerLite
+        ANCHOR_ANALYSIS_AVAILABLE = True
+        ANCHOR_ANALYZER_CLASS = AnchorTextAnalyzerLite
+        print("Using lite anchor text analyzer (NLTK not available)")
+    except ImportError:
+        ANCHOR_ANALYSIS_AVAILABLE = False
+        ANCHOR_ANALYZER_CLASS = None
+        print("Warning: Anchor text analysis not available")
+
+try:
+    from recommendation_engine import RecommendationEngine
+    RECOMMENDATIONS_AVAILABLE = True
+except ImportError:
+    RECOMMENDATIONS_AVAILABLE = False
+    print("Warning: Recommendations not available")
 
 # Page configuration
 st.set_page_config(
@@ -85,12 +107,22 @@ aggressive_mode = st.sidebar.checkbox("Aggressive anti-bot mode", value=False,
                                      help="Use more sophisticated browser simulation (slower but more effective)")
 
 # Enhanced analysis options
-enable_anchor_analysis = st.sidebar.checkbox("Enable Anchor Text Analysis", value=True,
-                                           help="Analyze anchor text uniqueness and optimization")
-enable_optimization_scoring = st.sidebar.checkbox("Enable Optimization Scoring", value=True,
-                                                help="Score anchor text quality on multiple dimensions")
-enable_recommendations = st.sidebar.checkbox("Generate Recommendations", value=True,
-                                           help="Generate prioritized SEO recommendations")
+if ANCHOR_ANALYSIS_AVAILABLE:
+    enable_anchor_analysis = st.sidebar.checkbox("Enable Anchor Text Analysis", value=True,
+                                               help="Analyze anchor text uniqueness and optimization")
+    enable_optimization_scoring = st.sidebar.checkbox("Enable Optimization Scoring", value=True,
+                                                    help="Score anchor text quality on multiple dimensions")
+else:
+    st.sidebar.warning("⚠️ Anchor text analysis unavailable (NLTK not installed)")
+    enable_anchor_analysis = False
+    enable_optimization_scoring = False
+
+if RECOMMENDATIONS_AVAILABLE:
+    enable_recommendations = st.sidebar.checkbox("Generate Recommendations", value=True,
+                                               help="Generate prioritized SEO recommendations")
+else:
+    st.sidebar.warning("⚠️ Recommendations unavailable (dependencies missing)")
+    enable_recommendations = False
 
 st.sidebar.header("📋 About")
 st.sidebar.info("""
@@ -647,7 +679,31 @@ with tab3:
                     st.error("No URLs found in sitemap")
 
             except Exception as e:
-                st.error(f"Error processing sitemap: {str(e)}")
+                error_msg = str(e)
+                if "403 Forbidden" in error_msg:
+                    st.error("❌ **Access Blocked**: The website is blocking automated access to this sitemap. This is common with protected or high-security sites.")
+                    st.info("💡 **Suggestions**:\n"
+                           "- Try accessing the sitemap URL manually in your browser\n"
+                           "- The website may require special permissions or authentication\n"
+                           "- Consider using manual URL entry instead")
+                elif "Not a gzipped file" in error_msg:
+                    st.error("❌ **Sitemap Format Error**: The sitemap content couldn't be processed properly.")
+                    st.info("💡 **Suggestions**:\n"
+                           "- Try accessing the sitemap URL directly in your browser\n"
+                           "- The sitemap may be corrupted or in an unsupported format\n"
+                           "- Consider using manual URL entry for individual pages")
+                elif "Failed to parse XML" in error_msg:
+                    st.error("❌ **XML Parsing Error**: The sitemap contains invalid XML format.")
+                    st.info("💡 **Suggestions**:\n"
+                           "- Check if the sitemap URL is correct\n"
+                           "- The sitemap may be malformed or corrupted\n"
+                           "- Try a different sitemap URL from the same site")
+                else:
+                    st.error(f"❌ **Processing Error**: {error_msg}")
+                    st.info("💡 **General Suggestions**:\n"
+                           "- Verify the sitemap URL is accessible\n"
+                           "- Try using manual URL entry instead\n"
+                           "- Check if the website has changed its structure")
 
 # Display loaded URLs
 if st.session_state.urls:
@@ -696,12 +752,12 @@ if st.session_state.urls:
                         'site_summary': {}
                     }
 
-                    if enable_anchor_analysis:
-                        analyzer = AnchorTextAnalyzer()
+                    if enable_anchor_analysis and ANCHOR_ANALYSIS_AVAILABLE and ANCHOR_ANALYZER_CLASS:
+                        analyzer = ANCHOR_ANALYZER_CLASS()
                         enhanced_results['anchor_issues'] = analyzer.analyze_uniqueness(internal_links)
 
-                    if enable_optimization_scoring:
-                        analyzer = AnchorTextAnalyzer()
+                    if enable_optimization_scoring and ANCHOR_ANALYSIS_AVAILABLE and ANCHOR_ANALYZER_CLASS:
+                        analyzer = ANCHOR_ANALYZER_CLASS()
                         for link in internal_links:
                             key = f"{link['source_url']} -> {link['url']}"
                             enhanced_results['optimization_scores'][key] = analyzer.score_anchor_text(
@@ -719,7 +775,7 @@ if st.session_state.urls:
                         'unique_anchor_percentage': 0  # Calculate this
                     }
 
-                    if enable_recommendations:
+                    if enable_recommendations and RECOMMENDATIONS_AVAILABLE:
                         engine = RecommendationEngine()
                         enhanced_results['recommendations'] = engine.generate_comprehensive_recommendations(
                             enhanced_results['duplicate_records'],

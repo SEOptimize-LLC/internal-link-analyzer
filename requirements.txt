@@ -2,9 +2,9 @@ streamlit>=1.28.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 pandas>=2.0.0
-urllib3>=2.0.0
 lxml>=4.9.0
-nltk>=3.8.0
-openpyxl>=3.1.0
-reportlab>=4.0.0
-defusedxml>=0.7.0
+# Note: Removed heavy packages that can cause Streamlit Cloud issues
+# nltk>=3.8.0  # Commented out - causes data download issues
+# openpyxl>=3.1.0  # Commented out - can cause conflicts
+# reportlab>=4.0.0  # Commented out - heavy package
+# defusedxml>=0.7.0  # Commented out - not essential for basic functionality
